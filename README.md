@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/github/license/jseifeddine/certifi)](./LICENSE)
 
 [![GHCR image](https://ghcr-badge.egpl.dev/jseifeddine/certifi/latest_tag?trim=major&label=ghcr.io)](https://github.com/jseifeddine/certifi/pkgs/container/certifi)
-[![GHCR size](https://ghcr-badge.egpl.dev/jseifeddine/certifi/size?label=image%20size&color=2ea44f)](https://github.com/jseifeddine/certifi/pkgs/container/certifi)
+[![GHCR size](https://ghcr-badge.egpl.dev/jseifeddine/certifi/size?tag=edge&label=image%20size&color=%232ea44f)](https://github.com/jseifeddine/certifi/pkgs/container/certifi)
 
 [![Rust 2021](https://img.shields.io/badge/Rust-2021-000000?logo=rust&logoColor=white)](https://www.rust-lang.org)
 [![Axum](https://img.shields.io/badge/Axum-0.7-1a1a1a)](https://github.com/tokio-rs/axum)
