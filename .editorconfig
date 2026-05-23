@@ -1,0 +1,28 @@
+# EditorConfig — unifies basic editor behavior across IDEs.
+# https://editorconfig.org/
+
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+# Rust: 4-space indent, 100-column lines (matches rustfmt.toml).
+[*.rs]
+indent_style = space
+indent_size = 4
+max_line_length = 100
+
+# Web (TypeScript/React), JSON, YAML, TOML: 2-space indent.
+[*.{ts,tsx,js,jsx,json,css,yml,yaml,toml}]
+indent_style = space
+indent_size = 2
+
+[*.md]
+# Markdown is space-sensitive at line ends (two trailing spaces = hard break).
+trim_trailing_whitespace = false
+
+[Makefile]
+indent_style = tab

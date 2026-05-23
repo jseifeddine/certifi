@@ -1,0 +1,105 @@
+# =============================================================================
+# CI — runs on every PR, every push to main, and every vX.Y.Z tag.
+#
+# Gates a change on the same checks a maintainer would run locally:
+#   • Rust: rustfmt, clippy (-D warnings), and the workspace test suite.
+#   • Web:  the optional admin UI typechecks + builds.
+#   • Docker: the production server image still builds from a clean checkout.
+#
+# Jobs run in parallel; the Rust toolchain + cargo registry are cached between
+# runs. Nothing is published — this is a validation pipeline.
+# =============================================================================
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+
+# Cancel superseded runs for the same ref.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Keep in step with the toolchain pinned in the Dockerfile.
+  RUST_TOOLCHAIN: "1.95.0"
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Format + lint + unit/integration tests for the Rust workspace.
+  # ---------------------------------------------------------------------------
+  rust:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system deps (openssl for the `openssl` crate)
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libssl-dev
+
+      - name: Install Rust ${{ env.RUST_TOOLCHAIN }}
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format check
+        run: cargo fmt --all --check
+
+      - name: Clippy (warnings are errors)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace
+
+  # ---------------------------------------------------------------------------
+  # The optional React + Vite admin UI must typecheck and build.
+  # ---------------------------------------------------------------------------
+  web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - run: npm ci
+      - name: Build (tsc -b + vite build)
+        run: npm run build
+
+  # ---------------------------------------------------------------------------
+  # Prove the production server image still builds from a clean checkout.
+  # Build-only: nothing is pushed.
+  # ---------------------------------------------------------------------------
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build server image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

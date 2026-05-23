@@ -1,0 +1,128 @@
+# Certifi first-boot provisioning file.
+#
+# When `CERTIFI_PROVISIONING_FILE=/path/to/this.yaml` is set in the
+# environment and Certifi starts with a database that has NOT been
+# provisioned before, the contents of this file are read and applied:
+#
+#   * ACME settings (CA URL, key algorithm)
+#   * OIDC provider + group→role mappings
+#   * DNS integrations
+#
+# Successful provisioning writes a `provisioned_at` sentinel into the
+# settings table. Subsequent restarts skip the file (the API/UI become
+# the source of truth). To re-provision a database:
+#
+#   sqlite3 certifi.db "DELETE FROM settings WHERE key='provisioned_at';"
+#
+# Secrets (OIDC client_secret, integration API tokens) live in this file
+# verbatim. Treat it as sensitive — chmod 600, owner = the user the
+# Certifi process runs as. Failure to parse the file aborts startup.
+#
+# Every top-level block is optional. Drop anything you don't need.
+
+# ─────────────────────────────────────────────────────────────────────
+# ACME (Let's Encrypt or any RFC 8555 directory)
+# ─────────────────────────────────────────────────────────────────────
+acme:
+  ca_url: https://acme-v02.api.letsencrypt.org/directory
+  # Algorithm used to generate new cert private keys. One of:
+  # ec-p384 (recommended), ec-p256, rsa-2048, rsa-4096.
+  key_algo: ec-p384
+
+# ─────────────────────────────────────────────────────────────────────
+# OIDC single sign-on
+#
+# `client_secret` is stored encrypted with the runtime COOKIE_KEY, so a
+# later edit through the SSO admin page round-trips the same way.
+#
+# `force_login` skips the local password form and bounces /login straight
+# to the IdP. `/login?local=1` is the break-glass override.
+# ─────────────────────────────────────────────────────────────────────
+oidc:
+  enabled: true
+  issuer: https://auth.example.com/application/o/certifi
+  client_id: certifi
+  client_secret: replace-me-with-the-real-client-secret
+  redirect_uri: https://certifi.example.com/api/oidc/callback
+  scopes: [openid, email, profile, groups]
+
+  # Token claim names — leave defaults unless your IdP uses non-standard
+  # names. Authentik / Keycloak / Google / Okta all match the defaults.
+  group_claim: groups
+  username_claim: preferred_username
+  email_claim: email
+
+  # JIT provisioning: create the local Certifi user on first sign-in.
+  # Turn off if you want to gate access on a manually-created shell.
+  create_users: true
+
+  # When true, /login auto-redirects to the IdP. When false, the local
+  # form shows with a "Continue with <provider>" button alongside.
+  force_login: true
+
+  # Group→role mappings. Every mapping whose `group` name appears in the
+  # signed-in user's group claim is materialised as a role assignment on
+  # each sign-in. Roles can be the friendly names below or raw ids
+  # (system:super_admin / system:operator / system:viewer / a custom id).
+  group_mappings:
+    - group: certifi-admins
+      role: SuperAdmin       # full access to everything
+      scope: global
+    - group: certifi-ops
+      role: Operator         # issue/renew/revoke certs, no user admin
+      scope: global
+    - group: example-zone-ops
+      role: Operator         # same role, scoped to a single zone
+      scope: zone:example.com
+    - group: certifi-readers
+      role: Viewer           # read-only across all zones
+      scope: global
+
+# ─────────────────────────────────────────────────────────────────────
+# DNS integrations — one entry per provider account. The `kind` must
+# match a known integration id; valid kinds today:
+#
+#   cloudflare, digitalocean, gandi, hetzner, pdns
+#
+# `config` keys are the same ones the web admin's "Add integration"
+# dialog shows. Required fields are validated before the row is
+# persisted; an unknown kind or a malformed config aborts startup.
+# Each provider has its own prefixed key naming; copy verbatim.
+# ─────────────────────────────────────────────────────────────────────
+integrations:
+  - name: Production Cloudflare
+    kind: cloudflare
+    enabled: true
+    config:
+      cf_api_token: cf-replace-me-with-real-token
+      # cf_wait: "10"                      # propagation delay (seconds)
+
+  - name: DigitalOcean
+    kind: digitalocean
+    enabled: true
+    config:
+      do_api_token: do-replace-me
+      # do_wait: "30"
+
+  - name: Internal PowerDNS
+    kind: pdns
+    enabled: true
+    config:
+      pdns_url: https://pdns.internal/api
+      pdns_key: pdns-replace-me
+      # pdns_wait: "5"
+      # pdns_server: localhost             # leave blank to auto-detect
+
+  - name: Gandi LiveDNS
+    kind: gandi
+    enabled: false           # configured but parked
+    config:
+      gandi_pat: gandi-replace-me
+      # gandi_wait: "10"
+
+  - name: Hetzner DNS
+    kind: hetzner
+    enabled: true
+    config:
+      hetzner_api_token: hetzner-replace-me
+      # hetzner_wait: "10"

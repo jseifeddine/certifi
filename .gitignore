@@ -1,0 +1,48 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+
+# Web admin build artifacts
+web/node_modules/
+web/dist/
+web/*.tsbuildinfo
+
+# Local build outputs (scripts/build-cli.sh etc.)
+/dist/
+
+# Database files
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+
+# Runtime data directory
+/data/
+
+# Environment / secrets
+.env
+.env.*
+*.pem
+*.key
+*.crt
+*.pfx
+*.p12
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS metadata
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+
+# Compiled binary (if copied to repo root)
+/certifi
+/certifi.exe

@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Certifi</title>
+    <!--
+      Theme boot: set the `dark` class on <html> before any CSS paints so
+      first-render colours match the user's preference. Mirrors the logic in
+      src/theme.tsx (localStorage key 'certifi.theme', falls back to OS
+      preference). Inline so it runs in the same parse step as <head>.
+    -->
+    <script>
+      (function () {
+        try {
+          var stored = localStorage.getItem('certifi.theme');
+          var systemDark = window.matchMedia
+            && window.matchMedia('(prefers-color-scheme: dark)').matches;
+          var useDark = stored === 'dark'
+            || ((stored === null || stored === 'system') && systemDark);
+          if (useDark) document.documentElement.classList.add('dark');
+        } catch (e) { /* private mode etc. — leave defaults */ }
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

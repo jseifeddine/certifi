@@ -1,0 +1,10 @@
+# Default owner for everything in the repo. Required reviewer on all PRs.
+* @jseifeddine
+
+# Security-sensitive areas — flag these for an extra-careful review.
+/crates/certifi-server/src/services/acme.rs   @jseifeddine
+/crates/certifi-server/src/services/secret.rs @jseifeddine
+/crates/certifi-server/src/integrations/      @jseifeddine
+/crates/certifi-server/src/auth.rs            @jseifeddine
+/crates/certifi-server/src/rbac.rs            @jseifeddine
+/crates/certifi-server/src/audit.rs           @jseifeddine

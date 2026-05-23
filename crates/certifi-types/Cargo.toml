@@ -1,0 +1,15 @@
+[package]
+name = "certifi-types"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Shared wire types for Certifi server and client"
+
+[dependencies]
+serde.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+utoipa.workspace = true
+
+[lints]
+workspace = true

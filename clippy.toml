@@ -1,0 +1,6 @@
+# Clippy configuration. Lint *levels* are set in [workspace.lints] in the root
+# Cargo.toml; this file only holds clippy's tunable thresholds.
+
+# Minimum supported Rust version — matches the toolchain pinned in the
+# Dockerfile. Clippy will not suggest lints that require a newer compiler.
+msrv = "1.95.0"

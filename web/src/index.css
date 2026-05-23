@@ -1,0 +1,360 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* =============================================================================
+ * Design tokens — neutral grays + a single accent, oklch palette.
+ *
+ * Components reference colours as `text-[color:var(--color-fg)]` etc., the
+ * same convention throughout, so a deployment can re-theme by editing this
+ * file alone.
+ *
+ * Phase-6 / RBAC pages also rely on `bg-bg`, `text-text` and the legacy
+ * compatibility aliases below — those are mapped onto the new tokens so the
+ * full pre-rewrite codebase keeps painting correctly while individual
+ * components are migrated.
+ * ========================================================================== */
+@layer base {
+  :root {
+    --color-bg:         oklch(99% 0 0);
+    --color-bg-subtle:  oklch(97% 0 0);
+    --color-bg-muted:   oklch(94% 0 0);
+    --color-fg:         oklch(20% 0 0);
+    --color-fg-muted:   oklch(45% 0 0);
+    --color-fg-subtle:  oklch(60% 0 0);
+    --color-border:     oklch(90% 0 0);
+
+    --color-accent:     oklch(55% 0.18 270);
+    --color-accent-fg:  oklch(99% 0 0);
+
+    --color-success:    oklch(58% 0.15 145);
+    --color-warn:       oklch(70% 0.18 80);
+    --color-error:      oklch(55% 0.22 25);
+
+    /* Legacy compatibility — the old "named" palette (bg / surface / text /
+       muted / brand / ok / warn / danger / info) still gets referenced from
+       components that haven't been migrated. The Tailwind config emits
+       rgb(var(--c-xxx) / <alpha>) so we keep populating the old vars from
+       the new ones to avoid a giant atomic rewrite. */
+    --c-bg:           255 255 255;
+    --c-surface:      255 255 255;
+    --c-surface2:     247 247 247;
+    --c-surface3:     239 239 239;
+    --c-border:       226 226 226;
+    --c-border2:      200 200 200;
+    --c-text:           42  42  42;
+    --c-muted:         110 110 110;
+    --c-dim:           140 140 140;
+    --c-brand:          74  73 188;   /* matches oklch accent in light mode */
+    --c-brand-hover:    60  60 160;
+    --c-ok:             58 142  86;
+    --c-warn:          194 130  19;
+    --c-danger:        198  64  47;
+    --c-info:           24 110 200;
+
+    --radius-sm: 0.25rem;
+    --radius-md: 0.5rem;
+    --radius-lg: 0.75rem;
+  }
+
+  :root.dark {
+    --color-bg:         oklch(15% 0 0);
+    --color-bg-subtle:  oklch(20% 0 0);
+    --color-bg-muted:   oklch(25% 0 0);
+    --color-fg:         oklch(98% 0 0);
+    --color-fg-muted:   oklch(70% 0 0);
+    --color-fg-subtle:  oklch(55% 0 0);
+    --color-border:     oklch(30% 0 0);
+    --color-accent:     oklch(65% 0.18 270);
+    --color-accent-fg:  oklch(15% 0 0);
+
+    /* Legacy palette in dark mode. */
+    --c-bg:            17  17  17;
+    --c-surface:       28  28  28;
+    --c-surface2:      35  35  35;
+    --c-surface3:      45  45  45;
+    --c-border:        51  51  51;
+    --c-border2:       71  71  71;
+    --c-text:         248 248 248;
+    --c-muted:        163 163 163;
+    --c-dim:          120 120 120;
+    --c-brand:        140 138 252;
+    --c-brand-hover:  120 118 232;
+    --c-ok:            96 196 138;
+    --c-warn:         245 180  64;
+    --c-danger:       239 100  82;
+    --c-info:          88 168 240;
+  }
+}
+
+@layer base {
+  html, body, #root { height: 100%; }
+  html {
+    background-color: var(--color-bg);
+    color: var(--color-fg);
+    /* Bind UA control rendering (checkbox/radio/scrollbar) to the app's
+       theme toggle, not the OS preference. Overridden by `:root.dark`. */
+    color-scheme: light;
+  }
+  :root.dark { color-scheme: dark; }
+  body {
+    font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+      'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+
+  /* Default form elements — used by pages not yet migrated to bespoke styles. */
+  input, select, textarea {
+    @apply rounded-md border px-3 py-2 text-sm outline-none transition-colors w-full;
+    border-color: var(--color-border);
+    background-color: var(--color-bg);
+    color: var(--color-fg);
+    /* Modern browsers honour `accent-color` on form controls — paints
+       checkbox / radio fills and the active state on range/progress in
+       the configured colour. Single source of truth for the indigo. */
+    accent-color: var(--color-accent);
+  }
+  input:focus, select:focus, textarea:focus {
+    border-color: var(--color-accent);
+    box-shadow: 0 0 0 2px color-mix(in oklch, var(--color-accent) 30%, transparent);
+  }
+  /* Native checkbox / radio sizing + colour fixes. Without these the
+     <input type="checkbox"> draws as a tiny black square against a light
+     theme — `accent-color` colours the *fill* but the chrome is OS-default
+     unless we opt in to the new control rendering. */
+  input[type="checkbox"], input[type="radio"] {
+    @apply w-4 h-4 align-middle;
+    /* Native UA paints the box + tick using inherited `color-scheme`;
+       our wrapper's `border` / `background` would otherwise wrap the
+       control with an extra CSS box, which we don't want. */
+    width: 1rem;
+    padding: 0;
+    border: none;
+    background-color: transparent;
+  }
+  /* Dropdowns: kill the platform background+border so they match the
+     surrounding text inputs and the chevron stays on a themed surface. */
+  select {
+    appearance: none;
+    -webkit-appearance: none;
+    background-image: linear-gradient(45deg, transparent 50%, currentColor 50%),
+                      linear-gradient(135deg, currentColor 50%, transparent 50%);
+    background-position: calc(100% - 16px) 50%, calc(100% - 11px) 50%;
+    background-size: 5px 5px, 5px 5px;
+    background-repeat: no-repeat;
+    padding-right: 2rem;
+  }
+}
+
+/* =============================================================================
+ * Legacy component classes — kept until every page is migrated to the new
+ * primitive vocabulary. Each rule references the new tokens directly so
+ * dark mode flips correctly. Anything new should NOT use these; reach for
+ * the colour vars and the components/ui/ primitives instead.
+ * ========================================================================== */
+@layer components {
+  .btn {
+    @apply inline-flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium cursor-pointer border transition-colors whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed;
+    border-color: var(--color-border);
+  }
+  .btn-sm { @apply px-2.5 py-1 text-xs; }
+  .btn-primary {
+    background-color: var(--color-accent);
+    color: var(--color-accent-fg);
+    border-color: var(--color-accent);
+  }
+  .btn-primary:hover { opacity: 0.95; }
+  .btn-secondary {
+    background-color: var(--color-bg);
+    color: var(--color-fg);
+  }
+  .btn-secondary:hover { background-color: var(--color-bg-subtle); }
+  .btn-danger {
+    color: var(--color-error);
+    border-color: color-mix(in oklch, var(--color-error) 40%, transparent);
+    background-color: color-mix(in oklch, var(--color-error) 10%, transparent);
+  }
+  .btn-danger:hover { background-color: color-mix(in oklch, var(--color-error) 18%, transparent); }
+  .btn-success {
+    color: var(--color-success);
+    border-color: color-mix(in oklch, var(--color-success) 40%, transparent);
+    background-color: color-mix(in oklch, var(--color-success) 10%, transparent);
+  }
+  .btn-warning {
+    color: var(--color-warn);
+    border-color: color-mix(in oklch, var(--color-warn) 40%, transparent);
+    background-color: color-mix(in oklch, var(--color-warn) 10%, transparent);
+  }
+
+  .badge {
+    @apply inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium;
+    border: 1px solid transparent;
+  }
+  .badge-ok       { color: var(--color-success); background-color: color-mix(in oklch, var(--color-success) 12%, transparent); }
+  .badge-warn     { color: var(--color-warn);    background-color: color-mix(in oklch, var(--color-warn) 12%, transparent); }
+  .badge-danger   { color: var(--color-error);   background-color: color-mix(in oklch, var(--color-error) 12%, transparent); }
+  .badge-admin    { color: var(--color-accent);  background-color: color-mix(in oklch, var(--color-accent) 12%, transparent); }
+  .badge-muted    { color: var(--color-fg-muted); background-color: var(--color-bg-subtle); }
+
+  .alert {
+    @apply px-4 py-3 rounded-md text-sm mb-4 border;
+    border-color: var(--color-border);
+  }
+  .alert-error   { color: var(--color-error);   border-color: color-mix(in oklch, var(--color-error) 40%, transparent);   background-color: color-mix(in oklch, var(--color-error) 8%, transparent); }
+  .alert-success { color: var(--color-success); border-color: color-mix(in oklch, var(--color-success) 40%, transparent); background-color: color-mix(in oklch, var(--color-success) 8%, transparent); }
+  .alert-info    {                              border-color: var(--color-border); background-color: var(--color-bg-subtle); }
+  .alert-warning { color: var(--color-warn);    border-color: color-mix(in oklch, var(--color-warn) 40%, transparent);    background-color: color-mix(in oklch, var(--color-warn) 8%, transparent); }
+
+  .table-wrap {
+    @apply rounded-md border overflow-hidden;
+    border-color: var(--color-border);
+    background-color: var(--color-bg);
+  }
+  .nav-item {
+    @apply flex items-center gap-2.5 px-3 py-2 rounded-md cursor-pointer text-sm font-medium transition-colors w-full text-left bg-transparent border-none;
+    color: var(--color-fg-muted);
+  }
+  .nav-item:hover { background-color: var(--color-bg-muted); color: var(--color-fg); }
+  .nav-item.active {
+    background-color: var(--color-accent);
+    color: var(--color-accent-fg);
+  }
+
+  .card {
+    @apply rounded-md border p-5;
+    border-color: var(--color-border);
+    background-color: var(--color-bg);
+  }
+}
+
+.spinner {
+  width: 18px;
+  height: 18px;
+  border: 2px solid color-mix(in oklch, var(--color-border) 80%, transparent);
+  border-top-color: var(--color-accent);
+  border-radius: 50%;
+  display: inline-block;
+  animation: spin 0.6s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* =============================================================================
+ * Docs page — rendered markdown styles
+ * ========================================================================== */
+.prose-docs { color: var(--color-fg); line-height: 1.6; }
+.prose-docs h1 { @apply text-3xl font-semibold tracking-tight mt-2 mb-4; }
+.prose-docs h2 { @apply text-2xl font-semibold tracking-tight mt-8 mb-3 pb-2 border-b; border-color: var(--color-border); }
+.prose-docs h3 { @apply text-xl font-semibold mt-6 mb-2; }
+.prose-docs h4 { @apply text-base font-semibold mt-5 mb-2; }
+.prose-docs .heading-anchor { position: relative; scroll-margin-top: 1rem; }
+.prose-docs .heading-anchor-btn {
+  @apply inline-flex items-center justify-center align-middle ml-2 opacity-0 transition-opacity;
+  color: var(--color-fg-muted);
+  background: transparent; border: 0; padding: 0; cursor: pointer;
+}
+.prose-docs .heading-anchor-btn:hover { color: var(--color-accent); }
+.prose-docs .heading-anchor:hover .heading-anchor-btn,
+.prose-docs .heading-anchor:focus-within .heading-anchor-btn { opacity: 1; }
+.prose-docs p  { @apply my-3; }
+.prose-docs a  { color: var(--color-accent); text-decoration: underline; text-underline-offset: 2px; }
+.prose-docs ul { @apply list-disc pl-6 my-3 space-y-1; }
+.prose-docs ol { @apply list-decimal pl-6 my-3 space-y-1; }
+.prose-docs li > ul, .prose-docs li > ol { @apply my-1; }
+.prose-docs code:not(pre code) {
+  @apply px-1.5 py-0.5 rounded text-[0.875em];
+  font-family: var(--font-mono, ui-monospace, monospace);
+  background-color: var(--color-bg-subtle);
+  border: 1px solid var(--color-border);
+}
+.prose-docs pre {
+  @apply rounded-md p-4 overflow-x-auto my-4 text-[13px] leading-snug border;
+  background-color: var(--color-bg-subtle);
+  border-color: var(--color-border);
+}
+.prose-docs pre code { background: transparent; border: 0; padding: 0; }
+.prose-docs blockquote {
+  @apply border-l-4 px-4 py-2 my-3;
+  border-color: var(--color-border);
+  color: var(--color-fg-muted);
+}
+.prose-docs table { @apply w-full my-4 text-sm border-collapse; }
+.prose-docs thead th {
+  @apply text-left font-semibold px-3 py-2 border-b-2;
+  background-color: var(--color-bg-subtle);
+  border-color: var(--color-border);
+}
+.prose-docs tbody td { @apply px-3 py-2 align-top border-b; border-color: var(--color-border); }
+.prose-docs hr { @apply my-6; border-color: var(--color-border); }
+.prose-docs strong { @apply font-semibold; }
+
+/* Code highlighting — keyed off our themed tokens so it flexes light/dark. */
+.hljs                  { color: var(--color-fg); background: transparent; }
+.hljs-comment, .hljs-quote        { color: var(--color-fg-subtle); font-style: italic; }
+.hljs-keyword, .hljs-selector-tag,
+.hljs-section, .hljs-link         { color: var(--color-accent); font-weight: 600; }
+.hljs-string, .hljs-attr,
+.hljs-symbol, .hljs-attribute     { color: var(--color-success); }
+.hljs-number, .hljs-literal,
+.hljs-meta                        { color: var(--color-warn); }
+.hljs-built_in, .hljs-type,
+.hljs-title.class_, .hljs-title.function_ { color: color-mix(in oklch, var(--color-accent) 70%, var(--color-fg)); }
+.hljs-variable, .hljs-template-variable,
+.hljs-tag, .hljs-name             { color: var(--color-error); }
+.hljs-emphasis { font-style: italic; }
+.hljs-strong   { font-weight: bold; }
+
+/* Swagger UI host overrides — light theme works out of the box; flip a few
+   surfaces in dark mode so it doesn't blind people. */
+.swagger-host {
+  @apply rounded-md p-2;
+  background-color: var(--color-bg-subtle);
+}
+:root.dark .swagger-host .swagger-ui,
+:root.dark .swagger-host .swagger-ui .info,
+:root.dark .swagger-host .swagger-ui .info .title,
+:root.dark .swagger-host .swagger-ui .scheme-container,
+:root.dark .swagger-host .swagger-ui .opblock-tag,
+:root.dark .swagger-host .swagger-ui .opblock .opblock-summary-operation-id,
+:root.dark .swagger-host .swagger-ui .opblock .opblock-summary-path,
+:root.dark .swagger-host .swagger-ui .opblock .opblock-summary-description,
+:root.dark .swagger-host .swagger-ui .opblock-description-wrapper p,
+:root.dark .swagger-host .swagger-ui .opblock-external-docs-wrapper p,
+:root.dark .swagger-host .swagger-ui .opblock-title_normal p,
+:root.dark .swagger-host .swagger-ui table thead tr td,
+:root.dark .swagger-host .swagger-ui table thead tr th,
+:root.dark .swagger-host .swagger-ui .response-col_status,
+:root.dark .swagger-host .swagger-ui .response-col_description,
+:root.dark .swagger-host .swagger-ui .parameter__name,
+:root.dark .swagger-host .swagger-ui .parameter__type,
+:root.dark .swagger-host .swagger-ui .parameter__in,
+:root.dark .swagger-host .swagger-ui label,
+:root.dark .swagger-host .swagger-ui .tab li,
+:root.dark .swagger-host .swagger-ui .model-title,
+:root.dark .swagger-host .swagger-ui .model,
+:root.dark .swagger-host .swagger-ui section.models h4,
+:root.dark .swagger-host .swagger-ui section.models h5 { color: var(--color-fg) !important; }
+:root.dark .swagger-host .swagger-ui .scheme-container { background: transparent !important; box-shadow: none !important; }
+:root.dark .swagger-host .swagger-ui .opblock { background: color-mix(in oklch, var(--color-bg) 60%, transparent) !important; border-color: var(--color-border) !important; }
+:root.dark .swagger-host .swagger-ui .opblock .opblock-section-header { background: color-mix(in oklch, var(--color-bg-subtle) 60%, transparent) !important; box-shadow: none !important; }
+:root.dark .swagger-host .swagger-ui section.models { background: transparent !important; border-color: var(--color-border) !important; }
+:root.dark .swagger-host .swagger-ui section.models.is-open h4 { border-color: var(--color-border) !important; }
+:root.dark .swagger-host .swagger-ui .model-box { background: color-mix(in oklch, var(--color-bg) 60%, transparent) !important; }
+:root.dark .swagger-host .swagger-ui input[type=text],
+:root.dark .swagger-host .swagger-ui textarea,
+:root.dark .swagger-host .swagger-ui select {
+  color: var(--color-fg) !important;
+  background: var(--color-bg) !important;
+  border-color: var(--color-border) !important;
+}
+:root.dark .swagger-host .swagger-ui .highlight-code,
+:root.dark .swagger-host .swagger-ui .opblock-body pre,
+:root.dark .swagger-host .swagger-ui .microlight {
+  background: var(--color-bg) !important;
+}

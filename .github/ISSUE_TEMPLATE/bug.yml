@@ -1,0 +1,53 @@
+name: Bug report
+description: Something isn't working the way it should.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. **Do not include private keys, API tokens, or other secrets.**
+        For a security vulnerability, use the private flow in [SECURITY.md](../blob/main/SECURITY.md) instead.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Configure a … integration
+        2. Issue a cert for …
+        3. See error …
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The `version` from `GET /api/health`, the footer, or the image tag.
+      placeholder: "1.0.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - certifi-server (API / renewal)
+        - certifi-cli
+        - web admin UI
+        - DNS provider integration
+        - auth / OIDC / MFA
+        - other / not sure
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Server logs around the failure. Redact any secrets first.
+      render: shell

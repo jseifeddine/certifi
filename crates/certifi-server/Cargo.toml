@@ -1,0 +1,80 @@
+[package]
+name = "certifi-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Certifi - ACME certificate manager with DNS-01 challenge"
+
+[[bin]]
+name = "certifi"
+path = "src/main.rs"
+
+[dependencies]
+# Web framework
+axum = { version = "0.7", features = ["macros"] }
+axum-extra = { version = "0.9", features = ["cookie", "cookie-private", "typed-header"] }
+tokio = { version = "1", features = ["full"] }
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors", "trace", "compression-gzip"] }
+
+# Shared wire types
+certifi-types = { path = "../certifi-types" }
+
+# OpenAPI / Swagger spec generation
+utoipa.workspace = true
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+# YAML used by the optional first-boot provisioning file
+# (CERTIFI_PROVISIONING_FILE). Loaded at startup, ignored thereafter.
+serde_yaml = "0.9"
+
+# Database
+sqlx = { version = "0.7", features = ["runtime-tokio", "sqlite"] }
+
+# Auth
+argon2 = "0.5"
+uuid.workspace = true
+chrono.workspace = true
+
+# Pure-Rust crypto (no system OpenSSL required)
+ring = "0.17"
+rcgen = "0.13"
+p12 = "0.6"
+x509-parser = "0.16"
+
+# HTTP client (rustls = no system TLS dep)
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+
+# OIDC SSO. `default-features = false` + `rustls-tls` matches the rest of the
+# tree (no system OpenSSL needed at runtime). `accept-rfc3339-timestamps` is
+# defensively enabled because some IdPs emit non-strict timestamps.
+openidconnect = { version = "4", default-features = false, features = ["reqwest", "rustls-tls", "accept-rfc3339-timestamps"] }
+url = "2"
+
+# TOTP (RFC 6238). Phase 6 / MFA. Default features pull in qr generation
+# which we use for the enrollment endpoint.
+totp-rs = { version = "5", features = ["gen_secret", "qr"] }
+
+# Async
+async-trait = "0.1"
+tokio-stream = { version = "0.1", features = ["sync"] }
+futures-util = { version = "0.3", default-features = false }
+
+# Utilities
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+rand = "0.8"
+base64 = "0.22"
+anyhow.workspace = true
+thiserror.workspace = true
+sha2 = "0.10"
+hex = "0.4"
+dotenvy = "0.15"
+zeroize = { version = "1", features = ["derive"] }
+lettre = { version = "0.11", features = ["tokio1", "tokio1-native-tls", "smtp-transport", "builder"], default-features = false }
+openssl = "0.10"
+
+[lints]
+workspace = true

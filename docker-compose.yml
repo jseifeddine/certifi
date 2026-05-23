@@ -1,0 +1,42 @@
+services:
+  # Headless API + renewal daemon. Run on its own (`docker compose up certifi`)
+  # for API-only deployments — auth happens via API tokens you create from the
+  # CLI or by enabling the `web` service once to make a user, then disabling it.
+  certifi:
+    build: .
+    # No `ports:` mapping by default — the API is only reachable via the
+    # `web` service (nginx) on the internal docker network. Uncomment if
+    # you want to expose the API directly to the host.
+    # ports:
+    #   - "8080:8080"
+    volumes:
+      - ./data:/data
+    environment:
+      - DATA_DIR=/data
+      - LISTEN_ADDR=0.0.0.0:8080
+      - RUST_LOG=certifi=info
+      # Pass-through for recovery: run e.g. `RESET_ADMIN_PASSWORD=1 docker compose up -d`
+      # to rotate the admin password and print it to logs. Unset before next start.
+      - RESET_ADMIN_PASSWORD=${RESET_ADMIN_PASSWORD:-}
+      # Required in production — generate with: openssl rand -hex 32
+      # - JWT_SECRET=your-long-random-secret-here
+      # - COOKIE_KEY=your-64-byte-cookie-key-here
+      # Optional SMTP for renewal notifications
+      # - SMTP_HOST=smtp.example.com
+      # - SMTP_PORT=587
+      # - SMTP_FROM=certifi@example.com
+      # - SMTP_USERNAME=user
+      # - SMTP_PASSWORD=pass
+    restart: unless-stopped
+
+  # Optional: React frontend + nginx reverse proxy. Omit this service for
+  # headless / API-only deployments (`docker compose up certifi`).
+  web:
+    build:
+      context: .
+      dockerfile: web/Dockerfile
+    ports:
+      - "80:80"
+    depends_on:
+      - certifi
+    restart: unless-stopped
