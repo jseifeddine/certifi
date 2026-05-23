@@ -11,7 +11,9 @@
 # Triggers / tags:
 #   • push to main      → `edge`
 #   • push of vX.Y.Z    → `X.Y.Z`, `X.Y`, and `latest`
-#   • workflow_dispatch  → manual run against the current ref
+#   • workflow_dispatch  → build & publish an existing tag passed as input
+#     (used to publish a release whose tag was pushed before this workflow
+#     existed); leave the input blank to build the current ref.
 #
 # NOTE: the first run creates the GHCR package as PRIVATE. To let `docker pull`
 # work anonymously and for the README ghcr-badge to render, set the package to
@@ -26,6 +28,10 @@ on:
     branches: [main]
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing git tag to build & publish (e.g. v1.1.0). Leave blank to build the current ref."
+        required: false
 
 # Don't pile up publishes for the same ref.
 concurrency:
@@ -53,6 +59,9 @@ jobs:
           - { platform: linux/arm64, runner: ubuntu-24.04-arm }
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Build the dispatched tag's source when given, else the trigger ref.
+          ref: ${{ github.event.inputs.tag || github.ref }}
 
       # "linux/amd64" -> "linux-amd64" for use in cache scopes / artifact names.
       - name: Derive platform slug
@@ -131,16 +140,22 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Tag set: `edge` for main, semver tags (+ implicit `latest`) for releases.
+      # Tag set:
+      #   • push to main          → `edge`
+      #   • vX.Y.Z tag push       → `X.Y.Z`, `X.Y`, `latest`
+      #   • dispatch with `tag`   → same semver set for that existing tag
+      # `value=` is empty on push events, so semver falls back to the git ref.
       - name: Compute tags
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=edge,branch=main
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
+            type=edge,branch=main,enable=${{ github.event_name == 'push' }}
+            type=semver,pattern={{version}},value=${{ github.event.inputs.tag }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ github.event.inputs.tag }}
+          flavor: |
+            latest=${{ github.event_name != 'push' || startsWith(github.ref, 'refs/tags/') }}
 
       - name: Create and push manifest list
         working-directory: /tmp/digests
