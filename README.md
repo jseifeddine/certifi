@@ -1,16 +1,6 @@
 # 🦎 Certifi
 
-[![CI](https://github.com/jseifeddine/certifi/actions/workflows/ci.yml/badge.svg)](https://github.com/jseifeddine/certifi/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/jseifeddine/certifi)](https://github.com/jseifeddine/certifi/releases/latest)
-[![License: MIT](https://img.shields.io/github/license/jseifeddine/certifi)](./LICENSE)
-
-[![GHCR image](https://ghcr-badge.egpl.dev/jseifeddine/certifi/latest_tag?trim=major&label=ghcr.io)](https://github.com/jseifeddine/certifi/pkgs/container/certifi)
-[![GHCR size](https://ghcr-badge.egpl.dev/jseifeddine/certifi/size?tag=edge&label=image%20size&color=%232ea44f)](https://github.com/jseifeddine/certifi/pkgs/container/certifi)
-
-[![Rust 2021](https://img.shields.io/badge/Rust-2021-000000?logo=rust&logoColor=white)](https://www.rust-lang.org)
-[![Axum](https://img.shields.io/badge/Axum-0.7-1a1a1a)](https://github.com/tokio-rs/axum)
-[![React 18](https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=black)](https://react.dev)
-[![ACME DNS-01](https://img.shields.io/badge/ACME-DNS--01-2ea44f)](https://datatracker.ietf.org/doc/html/rfc8555)
+[![CI](https://github.com/jseifeddine/certifi/actions/workflows/ci.yml/badge.svg)](https://github.com/jseifeddine/certifi/actions/workflows/ci.yml) [![Release](https://img.shields.io/github/v/release/jseifeddine/certifi)](https://github.com/jseifeddine/certifi/releases/latest) [![License: MIT](https://img.shields.io/github/license/jseifeddine/certifi)](./LICENSE) [![GHCR version](https://ghcr-badge.egpl.dev/jseifeddine/certifi/latest_tag?ignore=latest,edge&label=ghcr.io&color=%232ea44f)](https://github.com/jseifeddine/certifi/pkgs/container/certifi) [![GHCR size](https://ghcr-badge.egpl.dev/jseifeddine/certifi/size?tag=latest&label=image%20size&color=%232ea44f)](https://github.com/jseifeddine/certifi/pkgs/container/certifi) [![Rust 2021](https://img.shields.io/badge/Rust-2021-000000?logo=rust&logoColor=white)](https://www.rust-lang.org) [![Axum](https://img.shields.io/badge/Axum-0.7-1a1a1a)](https://github.com/tokio-rs/axum) [![React 18](https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=black)](https://react.dev) [![ACME DNS-01](https://img.shields.io/badge/ACME-DNS--01-2ea44f)](https://datatracker.ietf.org/doc/html/rfc8555)
 
 Self-hosted ACME v2 certificate manager. Issues and renews TLS certificates using DNS-01 challenges — no inbound HTTP required, so it works for internal and private domains. Pure-Rust ACME client, no external scripts.
 
