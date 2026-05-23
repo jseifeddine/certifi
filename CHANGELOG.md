@@ -6,6 +6,18 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.1.0] — 2026-05-23
+
+### Added
+
+- Pre-built **release binaries** for both `certifi` (server) and `certifi-cli`, attached to
+  every release across four targets: **linux** and **macOS (darwin)**, each in **`amd64`** and
+  **`arm64`**, with per-target `SHA256SUMS`.
+- macOS binaries statically link a **vendored OpenSSL** (new `vendored-openssl` cargo feature on
+  `certifi-server`), so they run on a clean Mac with no Homebrew OpenSSL install.
+- A `release` GitHub Actions workflow that builds and publishes those binaries on every `vX.Y.Z`
+  tag (each architecture built natively on its own runner).
+
 ## [1.0.0] — 2026-05-23
 
 First production release.
@@ -48,5 +60,6 @@ First production release.
   crypto helpers); `rustfmt` + `clippy -D warnings` enforced in CI; and a sidebar footer showing
   the running version linked to its GitHub release alongside a version-pinned Docs link.
 
-[Unreleased]: https://github.com/jseifeddine/certifi/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/jseifeddine/certifi/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/jseifeddine/certifi/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/jseifeddine/certifi/releases/tag/v1.0.0

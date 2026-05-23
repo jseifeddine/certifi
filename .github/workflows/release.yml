@@ -52,16 +52,19 @@ jobs:
 
   build:
     needs: ensure-release
-    name: ${{ matrix.arch }}
+    name: ${{ matrix.os }}-${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - arch: amd64
-            runner: ubuntu-latest
-          - arch: arm64
-            runner: ubuntu-24.04-arm
+          # Linux links the system OpenSSL (proven, fast).
+          - { os: linux,  arch: amd64, runner: ubuntu-latest,    features: "" }
+          - { os: linux,  arch: arm64, runner: ubuntu-24.04-arm, features: "" }
+          # macOS statically links a vendored OpenSSL so the binary is
+          # self-contained (no Homebrew dependency on the user's machine).
+          - { os: darwin, arch: arm64, runner: macos-14,         features: "certifi-server/vendored-openssl" }
+          - { os: darwin, arch: amd64, runner: macos-13,         features: "certifi-server/vendored-openssl" }
     steps:
       - uses: actions/checkout@v4
         with:
@@ -73,6 +76,7 @@ jobs:
         run: echo "tag=${{ github.event.inputs.tag || github.ref_name }}" >> "$GITHUB_OUTPUT"
 
       - name: Install system deps (OpenSSL)
+        if: matrix.os == 'linux'
         run: sudo apt-get update && sudo apt-get install -y pkg-config libssl-dev
 
       - name: Install Rust ${{ env.RUST_TOOLCHAIN }}
@@ -83,15 +87,19 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Build release binaries
-        run: cargo build --release --locked -p certifi-server -p certifi-client
+        run: |
+          EXTRA=""
+          [ -n "${{ matrix.features }}" ] && EXTRA="--features ${{ matrix.features }}"
+          cargo build --release --locked -p certifi-server -p certifi-client $EXTRA
 
       - name: Stage + checksum artifacts
         run: |
           TAG="${{ steps.ver.outputs.tag }}"
+          PLAT="${{ matrix.os }}-${{ matrix.arch }}"
           mkdir -p dist
-          cp target/release/certifi     "dist/certifi-${TAG}-linux-${{ matrix.arch }}"
-          cp target/release/certifi-cli "dist/certifi-cli-${TAG}-linux-${{ matrix.arch }}"
-          ( cd dist && sha256sum certifi-* > "SHA256SUMS-${TAG}-linux-${{ matrix.arch }}.txt" )
+          cp target/release/certifi     "dist/certifi-${TAG}-${PLAT}"
+          cp target/release/certifi-cli "dist/certifi-cli-${TAG}-${PLAT}"
+          ( cd dist && shasum -a 256 certifi-* > "SHA256SUMS-${TAG}-${PLAT}.txt" )
           ls -la dist
 
       - name: Upload binaries to the release

@@ -9,6 +9,14 @@ description = "Certifi - ACME certificate manager with DNS-01 challenge"
 name = "certifi"
 path = "src/main.rs"
 
+[features]
+# Statically link a vendored OpenSSL (built from source by `openssl-src`)
+# instead of the host's libssl. Used for distributable release binaries so they
+# don't depend on a system/Homebrew OpenSSL at runtime — important for the
+# macOS builds in particular. Off by default; the Docker image and CI link the
+# system OpenSSL.
+vendored-openssl = ["openssl/vendored"]
+
 [dependencies]
 # Web framework
 axum = { version = "0.7", features = ["macros"] }
