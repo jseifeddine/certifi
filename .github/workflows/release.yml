@@ -58,13 +58,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Linux links the system OpenSSL (proven, fast).
-          - { os: linux,  arch: amd64, runner: ubuntu-latest,    features: "" }
-          - { os: linux,  arch: arm64, runner: ubuntu-24.04-arm, features: "" }
+          # Linux links the system OpenSSL (proven, fast). Empty `target` means
+          # build for the runner's own host triple into target/release.
+          - { os: linux,  arch: amd64, runner: ubuntu-latest,    features: "",                               target: "" }
+          - { os: linux,  arch: arm64, runner: ubuntu-24.04-arm, features: "",                               target: "" }
           # macOS statically links a vendored OpenSSL so the binary is
           # self-contained (no Homebrew dependency on the user's machine).
-          - { os: darwin, arch: arm64, runner: macos-14,         features: "certifi-server/vendored-openssl" }
-          - { os: darwin, arch: amd64, runner: macos-13,         features: "certifi-server/vendored-openssl" }
+          - { os: darwin, arch: arm64, runner: macos-14,         features: "certifi-server/vendored-openssl", target: "" }
+          # Intel macOS: the macos-13 (Intel) runners are being retired, so
+          # cross-compile x86_64 ON the Apple-Silicon macos-14 runner. Apple's
+          # clang is a universal cross-compiler and openssl-src vendors+builds
+          # the x86_64 OpenSSL, so no macos-13 dependency remains.
+          - { os: darwin, arch: amd64, runner: macos-14,         features: "certifi-server/vendored-openssl", target: "x86_64-apple-darwin" }
     steps:
       - uses: actions/checkout@v4
         with:
@@ -83,6 +88,8 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
+          # No-op when empty (native build); installs the cross target otherwise.
+          targets: ${{ matrix.target }}
 
       - uses: Swatinem/rust-cache@v2
 
@@ -90,15 +97,23 @@ jobs:
         run: |
           EXTRA=""
           [ -n "${{ matrix.features }}" ] && EXTRA="--features ${{ matrix.features }}"
+          # Native build lands in target/release; a --target build lands in
+          # target/<triple>/release. Record the dir so the stage step finds it.
+          BINDIR="target/release"
+          if [ -n "${{ matrix.target }}" ]; then
+            EXTRA="$EXTRA --target ${{ matrix.target }}"
+            BINDIR="target/${{ matrix.target }}/release"
+          fi
           cargo build --release --locked -p certifi-server -p certifi-client $EXTRA
+          echo "BINDIR=$BINDIR" >> "$GITHUB_ENV"
 
       - name: Stage + checksum artifacts
         run: |
           TAG="${{ steps.ver.outputs.tag }}"
           PLAT="${{ matrix.os }}-${{ matrix.arch }}"
           mkdir -p dist
-          cp target/release/certifi     "dist/certifi-${TAG}-${PLAT}"
-          cp target/release/certifi-cli "dist/certifi-cli-${TAG}-${PLAT}"
+          cp "$BINDIR/certifi"     "dist/certifi-${TAG}-${PLAT}"
+          cp "$BINDIR/certifi-cli" "dist/certifi-cli-${TAG}-${PLAT}"
           ( cd dist && shasum -a 256 certifi-* > "SHA256SUMS-${TAG}-${PLAT}.txt" )
           ls -la dist
 
