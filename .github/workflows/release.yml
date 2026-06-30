@@ -10,7 +10,7 @@
 #     to attach binaries to a release whose tag was pushed before this workflow
 #     existed).
 #
-# Each architecture builds NATIVELY on its own runner (amd64 on ubuntu-latest,
+# Each architecture builds NATIVELY on its own runner (amd64 on ubuntu-22.04,
 # arm64 on ubuntu-24.04-arm) rather than cross-compiling — the server links
 # against the system OpenSSL, which is painful to cross-compile but trivial to
 # apt-install on a native runner.
@@ -60,7 +60,7 @@ jobs:
         include:
           # Linux links the system OpenSSL (proven, fast). Empty `target` means
           # build for the runner's own host triple into target/release.
-          - { os: linux,  arch: amd64, runner: ubuntu-latest,    features: "",                               target: "" }
+          - { os: linux,  arch: amd64, runner: ubuntu-22.04,     features: "",                               target: "" }
           - { os: linux,  arch: arm64, runner: ubuntu-24.04-arm, features: "",                               target: "" }
           # macOS statically links a vendored OpenSSL so the binary is
           # self-contained (no Homebrew dependency on the user's machine).

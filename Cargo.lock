@@ -449,7 +449,7 @@ dependencies = [
 
 [[package]]
 name = "certifi-client"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "anyhow",
  "certifi-types",
@@ -472,7 +472,7 @@ dependencies = [
 
 [[package]]
 name = "certifi-server"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "anyhow",
  "argon2",
@@ -515,7 +515,7 @@ dependencies = [
 
 [[package]]
 name = "certifi-types"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "chrono",
  "serde",

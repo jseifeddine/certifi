@@ -6,6 +6,13 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.1.1] — 2026-06-30
+
+### Fixed
+
+- Build Linux `amd64` release binaries on Ubuntu 22.04 so `certifi` and `certifi-cli`
+  remain compatible with older glibc versions than binaries built on `ubuntu-latest`.
+
 ## [1.1.0] — 2026-05-23
 
 ### Added
@@ -60,6 +67,7 @@ First production release.
   crypto helpers); `rustfmt` + `clippy -D warnings` enforced in CI; and a sidebar footer showing
   the running version linked to its GitHub release alongside a version-pinned Docs link.
 
-[Unreleased]: https://github.com/jseifeddine/certifi/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/jseifeddine/certifi/compare/v1.1.1...HEAD
+[1.1.1]: https://github.com/jseifeddine/certifi/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/jseifeddine/certifi/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/jseifeddine/certifi/releases/tag/v1.0.0
