@@ -1,27 +1,38 @@
 # =============================================================================
-# Publish image — builds the production server image and pushes a single
-# multi-arch manifest to ghcr.io/<owner>/certifi.
+# Publish images — builds both production images and pushes a multi-arch
+# manifest for each:
+#
+#   • ghcr.io/<owner>/certifi      — the Rust server (root Dockerfile)
+#   • ghcr.io/<owner>/certifi-web  — the web admin: React build served by nginx,
+#                                    which also reverse-proxies /api to the
+#                                    server (web/Dockerfile, repo-root context)
+#
+# Both are published so `docker compose pull` gives a working stack with no
+# local compile — docker-compose.yml names these images.
 #
 # Each architecture builds NATIVELY on its own runner (amd64 on ubuntu-latest,
 # arm64 on ubuntu-24.04-arm) — a Rust release build under QEMU emulation is
-# far too slow. Each runner pushes its image by *digest* (no tag), then a final
-# `merge` job stitches the per-arch digests into one tagged manifest list. This
-# mirrors how `release.yml` builds the standalone binaries natively per arch.
+# far too slow, and the web build gets the same treatment for consistency and
+# to avoid emulating npm. Each runner pushes its image by *digest* (no tag),
+# then a `merge` job per image stitches the per-arch digests into one tagged
+# manifest list. This mirrors how `release.yml` builds the standalone binaries
+# natively per arch.
 #
-# Triggers / tags:
+# Triggers / tags (identical for both images):
 #   • push to main      → `edge`
 #   • push of vX.Y.Z    → `X.Y.Z`, `X.Y`, and `latest`
 #   • workflow_dispatch  → build & publish an existing tag passed as input
 #     (used to publish a release whose tag was pushed before this workflow
 #     existed); leave the input blank to build the current ref.
 #
-# NOTE: the first run creates the GHCR package as PRIVATE. To let `docker pull`
+# NOTE: the first run creates each GHCR package as PRIVATE. To let `docker pull`
 # work anonymously and for the README ghcr-badge to render, set the package to
-# Public once: GitHub → your profile → Packages → certifi → Package settings →
-# Change visibility → Public (and "Connect repository" to inherit access).
+# Public once **per image**: GitHub → your profile → Packages → certifi (then
+# certifi-web) → Package settings → Change visibility → Public (and "Connect
+# repository" to inherit access).
 # =============================================================================
 
-name: Publish image
+name: Publish images
 
 on:
   push:
@@ -40,13 +51,15 @@ concurrency:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }} # ghcr.io/jseifeddine/certifi
+  # `github.repository` is <owner>/certifi; the web image appends `-web`, so the
+  # two packages are ghcr.io/<owner>/certifi and ghcr.io/<owner>/certifi-web.
+  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  # Build one architecture per runner and push it to GHCR addressed only by its
-  # content digest (push-by-digest=true). No tags are attached here.
+  # Build one (image, architecture) pair per runner and push it to GHCR
+  # addressed only by its content digest (push-by-digest=true). No tags here.
   build:
-    name: build (${{ matrix.platform }})
+    name: build ${{ matrix.slug }} (${{ matrix.platform }})
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
@@ -55,8 +68,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { platform: linux/amd64, runner: ubuntu-latest }
-          - { platform: linux/arm64, runner: ubuntu-24.04-arm }
+          - { slug: server, suffix: "",     dockerfile: Dockerfile,     platform: linux/amd64, runner: ubuntu-latest }
+          - { slug: server, suffix: "",     dockerfile: Dockerfile,     platform: linux/arm64, runner: ubuntu-24.04-arm }
+          # web/Dockerfile expects the repo root as its context (it copies both
+          # web/ and deploy/nginx.conf), so `context: .` is right for both.
+          - { slug: web,    suffix: "-web", dockerfile: web/Dockerfile, platform: linux/amd64, runner: ubuntu-latest }
+          - { slug: web,    suffix: "-web", dockerfile: web/Dockerfile, platform: linux/arm64, runner: ubuntu-24.04-arm }
     steps:
       - uses: actions/checkout@v4
         with:
@@ -84,22 +101,23 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}${{ matrix.suffix }}
 
       - name: Build and push by digest
         id: build
         uses: docker/build-push-action@v6
         with:
           context: .
+          file: ${{ matrix.dockerfile }}
           platforms: ${{ matrix.platform }}
           labels: ${{ steps.meta.outputs.labels }}
-          # Per-arch cache so the two runners don't clobber each other's layers.
-          cache-from: type=gha,scope=${{ steps.slug.outputs.pair }}
-          cache-to: type=gha,mode=max,scope=${{ steps.slug.outputs.pair }}
+          # Cache per (image, arch) so the four builds don't clobber each other.
+          cache-from: type=gha,scope=${{ matrix.slug }}-${{ steps.slug.outputs.pair }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.slug }}-${{ steps.slug.outputs.pair }}
           # Provenance attestations add extra manifest entries that confuse the
           # by-digest merge below — turn them off.
           provenance: false
-          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}${{ matrix.suffix }},push-by-digest=true,name-canonical=true,push=true
 
       - name: Export digest
         run: |
@@ -111,24 +129,33 @@ jobs:
       - name: Upload digest
         uses: actions/upload-artifact@v4
         with:
-          name: digests-${{ steps.slug.outputs.pair }}
+          name: digests-${{ matrix.slug }}-${{ steps.slug.outputs.pair }}
           path: /tmp/digests/*
           if-no-files-found: error
           retention-days: 1
 
-  # Combine the per-arch digests into a single tagged multi-arch manifest.
+  # Combine each image's per-arch digests into one tagged multi-arch manifest.
   merge:
     needs: build
+    name: merge ${{ matrix.slug }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { slug: server, suffix: "" }
+          - { slug: web,    suffix: "-web" }
     steps:
       - name: Download digests
         uses: actions/download-artifact@v4
         with:
           path: /tmp/digests
-          pattern: digests-*
+          # Only this image's digests — the other image's are a different
+          # manifest and merging them together would produce a broken tag.
+          pattern: digests-${{ matrix.slug }}-*
           merge-multiple: true
 
       - uses: docker/setup-buildx-action@v3
@@ -149,7 +176,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}${{ matrix.suffix }}
           tags: |
             type=edge,branch=main,enable=${{ github.event_name == 'push' }}
             type=semver,pattern={{version}},value=${{ github.event.inputs.tag }}
@@ -162,9 +189,9 @@ jobs:
         run: |
           docker buildx imagetools create \
             $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
-            $(printf '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@sha256:%s ' *)
+            $(printf '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}${{ matrix.suffix }}@sha256:%s ' *)
         env:
           DOCKER_METADATA_OUTPUT_JSON: ${{ steps.meta.outputs.json }}
 
       - name: Inspect
-        run: docker buildx imagetools inspect ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}
+        run: docker buildx imagetools inspect ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}${{ matrix.suffix }}:${{ steps.meta.outputs.version }}

@@ -3,6 +3,12 @@ services:
   # for API-only deployments — auth happens via API tokens you create from the
   # CLI or by enabling the `web` service once to make a user, then disabling it.
   certifi:
+    # Prebuilt multi-arch image from GHCR — `docker compose pull` gets you a
+    # running stack with no local toolchain. Pin a release with
+    # `CERTIFI_VERSION=1.1.3` (in .env or the environment); defaults to latest.
+    # `build:` stays for development: `docker compose build` compiles from
+    # source and tags the result as this same image name.
+    image: ghcr.io/jseifeddine/certifi:${CERTIFI_VERSION:-latest}
     build: .
     # No `ports:` mapping by default — the API is only reachable via the
     # `web` service (nginx) on the internal docker network. Uncomment if
@@ -30,8 +36,11 @@ services:
     restart: unless-stopped
 
   # Optional: React frontend + nginx reverse proxy. Omit this service for
-  # headless / API-only deployments (`docker compose up certifi`).
+  # headless / API-only deployments (`docker compose up certifi`). Published
+  # as its own image (`certifi-web`) so this service needs no local build
+  # either — keep its tag in step with the server's.
   web:
+    image: ghcr.io/jseifeddine/certifi-web:${CERTIFI_VERSION:-latest}
     build:
       context: .
       dockerfile: web/Dockerfile

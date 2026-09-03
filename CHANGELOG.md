@@ -6,6 +6,24 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.1.3] — 2026-09-03
+
+### Added
+
+- **The web admin is now published as its own image**, `ghcr.io/<owner>/certifi-web` — the React
+  build served by nginx, which also reverse-proxies `/api` to the server. Previously only the
+  server image was published, so anyone following the `docker pull` path had to build the
+  frontend themselves. Same multi-arch (amd64/arm64) manifests, same tag scheme
+  (`X.Y.Z` / `X.Y` / `latest` / `edge`), built natively per architecture.
+
+### Changed
+
+- **`docker compose` no longer compiles anything by default.** Both services name their published
+  image alongside the existing `build:` stanza, so `docker compose pull && docker compose up -d`
+  runs the stack with no Rust or Node toolchain. Set `CERTIFI_VERSION` to pin both images to a
+  release; `docker compose build` still builds from source and tags the result under the same
+  names.
+
 ## [1.1.2] — 2026-09-03
 
 ### Fixed
@@ -101,7 +119,8 @@ First production release.
   crypto helpers); `rustfmt` + `clippy -D warnings` enforced in CI; and a sidebar footer showing
   the running version linked to its GitHub release alongside a version-pinned Docs link.
 
-[Unreleased]: https://github.com/jseifeddine/certifi/compare/v1.1.2...HEAD
+[Unreleased]: https://github.com/jseifeddine/certifi/compare/v1.1.3...HEAD
+[1.1.3]: https://github.com/jseifeddine/certifi/compare/v1.1.2...v1.1.3
 [1.1.2]: https://github.com/jseifeddine/certifi/compare/v1.1.1...v1.1.2
 [1.1.1]: https://github.com/jseifeddine/certifi/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/jseifeddine/certifi/compare/v1.0.0...v1.1.0

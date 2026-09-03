@@ -5,9 +5,21 @@
 ```bash
 git clone https://github.com/jseifeddine/certifi.git
 cd certifi
-docker compose up -d --build
+docker compose pull && docker compose up -d
 docker compose logs -f certifi   # watch for the initial admin password
 ```
+
+Both services run from prebuilt multi-arch images on GHCR — `ghcr.io/jseifeddine/certifi`
+(server) and `ghcr.io/jseifeddine/certifi-web` (nginx + React admin) — so no Rust or Node
+toolchain is needed. Pin a release with `CERTIFI_VERSION` in `.env` or the environment:
+
+```bash
+echo "CERTIFI_VERSION=1.1.3" >> .env
+docker compose pull && docker compose up -d
+```
+
+To build from source instead (what you want when developing), use `docker compose up -d --build`:
+each service keeps its `build:` stanza and tags the locally built image under the same name.
 
 Open `http://localhost` and sign in with the printed credentials. Change the admin password immediately (Settings → Change Password).
 
@@ -16,7 +28,7 @@ Open `http://localhost` and sign in with the printed credentials. Change the adm
 Skip the web admin and run only the Rust server:
 
 ```bash
-docker compose up -d --build certifi
+docker compose pull certifi && docker compose up -d certifi
 # Then either:
 #   a) uncomment the `ports:` block in docker-compose.yml to bind 8080:8080
 #   b) put your own reverse proxy in front of it
@@ -33,12 +45,14 @@ docker run -d \
   -v certifi-data:/data \
   -e JWT_SECRET="$(openssl rand -hex 32)" \
   -e COOKIE_KEY="$(openssl rand -hex 32)" \
-  your-registry/certifi:latest
+  ghcr.io/jseifeddine/certifi:latest
 ```
 
 DNS provider credentials are configured through the API / web admin after first boot — not as environment variables. See [docs/dns-providers.md](dns-providers.md).
 
-If you also want the web admin, build it with `docker build -f web/Dockerfile -t certifi-web .` from the repo root and run it pointed at the server, or just use `docker compose`.
+If you also want the web admin, run `ghcr.io/jseifeddine/certifi-web:latest` alongside it on the
+same docker network — its nginx proxies `/api` to a host named `certifi` on port 8080, so the
+server's container must carry that name. `docker compose` wires that up for you.
 
 ## First-time setup
 

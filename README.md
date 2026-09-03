@@ -23,19 +23,22 @@ The web admin updates live over SSE — no page refresh required when a cert is 
 ```bash
 git clone https://github.com/jseifeddine/certifi.git
 cd certifi
-docker compose up -d --build
+docker compose pull && docker compose up -d
 docker compose logs -f certifi   # watch for the initial admin password
 ```
 
 Open `http://localhost` and sign in. Configure one or more DNS integrations (Settings → DNS Integrations → Add Integration), register an ACME account (Settings → ACME Account), then issue your first cert.
 
-For headless / API-only deployments: `docker compose up -d --build certifi` and uncomment the `ports:` block in `docker-compose.yml`.
+For headless / API-only deployments: `docker compose pull certifi && docker compose up -d certifi`, and uncomment the `ports:` block in `docker-compose.yml`.
 
-Prefer a prebuilt multi-arch (amd64/arm64) image instead of building locally:
+Both images are published to GHCR as multi-arch (amd64/arm64) manifests, so nothing is compiled locally:
 
 ```bash
-docker pull ghcr.io/jseifeddine/certifi:latest   # or a pinned :vX.Y.Z
+docker pull ghcr.io/jseifeddine/certifi:latest       # server + renewal daemon
+docker pull ghcr.io/jseifeddine/certifi-web:latest   # web admin (nginx + React)
 ```
+
+Pin a release by setting `CERTIFI_VERSION` (in `.env` or the environment) before `docker compose pull` — it tags both images together. To build from source instead, `docker compose build` still works and tags the result under the same names.
 
 ## Documentation
 
