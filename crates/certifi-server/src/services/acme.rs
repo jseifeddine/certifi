@@ -7,10 +7,18 @@ use ring::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 use tokio::time::sleep;
 
 use crate::integrations::DnsProvider;
+use crate::services::dns_check::{self, ExpectedTxt};
+
+/// Ceiling on how long we'll wait for every authoritative nameserver to serve
+/// the challenge records. Generous: a slow AXFR to a secondary is exactly the
+/// case this exists for, and waiting beats a failed order plus the ACME
+/// failed-validation rate limit that comes with retrying.
+const DNS_PROPAGATION_TIMEOUT: Duration = Duration::from_secs(300);
 
 // ── Wire types ───────────────────────────────────────────────────────────────
 
@@ -225,8 +233,15 @@ impl AcmeClient {
         let order: AcmeOrder = order_resp.json().await.context("parse order")?;
         tracing::info!("ACME order created: {}", order_url);
 
-        // ── 2. Deploy all DNS challenges first ───────────────────────────────
-        let mut deployed: Vec<String> = Vec::new();
+        // ── 2. Collect every challenge, grouped by the name it lands on ──────
+        //
+        // Grouping matters: a cert for `example.com` + `*.example.com` gets two
+        // authorizations that both publish to `_acme-challenge.example.com`
+        // with *different* values. Deploying them one call at a time makes the
+        // second replace the first, and the first authorization then fails with
+        // "Incorrect TXT record ... found". So gather the full value set per
+        // domain and hand each provider the whole RRset in one go.
+        let mut wanted: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         let mut pending_challenge_urls: Vec<String> = Vec::new();
 
         for auth_url in &order.authorizations {
@@ -254,26 +269,34 @@ impl AcmeClient {
             let key_auth = format!("{}.{}", challenge.token, self.thumbprint);
             let dns_value = b64url(&sha256(key_auth.as_bytes()));
 
-            let domain = &auth.identifier.value;
-            tracing::info!("Deploying DNS challenge for {}", domain);
+            wanted
+                .entry(auth.identifier.value.clone())
+                .or_default()
+                .insert(dns_value);
+            pending_challenge_urls.push(challenge.url.clone());
+        }
 
-            if let Err(e) = dns.deploy_challenge(domain, &dns_value).await {
+        // ── 3. Publish each challenge RRset ──────────────────────────────────
+        let mut deployed: Vec<String> = Vec::new();
+        for (domain, values) in &wanted {
+            let values: Vec<String> = values.iter().cloned().collect();
+            tracing::info!(
+                "Deploying DNS challenge for {} ({} value(s))",
+                domain,
+                values.len()
+            );
+            if let Err(e) = dns.deploy_challenge(domain, &values).await {
                 self.cleanup(&deployed, dns).await;
                 return Err(e.context(format!("DNS challenge deploy for {}", domain)));
             }
             deployed.push(domain.clone());
-            pending_challenge_urls.push(challenge.url.clone());
         }
 
-        // ── 3. Wait for DNS propagation (before notifying ACME) ──────────────
+        // ── 4. Wait until the records are actually visible ───────────────────
         if !pending_challenge_urls.is_empty() {
-            let delay = dns.propagation_delay();
-            if delay > 0 {
-                tracing::info!("Waiting {}s for DNS propagation...", delay);
-                sleep(Duration::from_secs(delay)).await;
-            }
+            self.await_dns_propagation(&wanted, dns).await;
 
-            // ── 4. Now notify ACME that all challenges are ready ──────────────
+            // ── 5. Now notify ACME that all challenges are ready ──────────────
             for challenge_url in &pending_challenge_urls {
                 let resp = self.post(challenge_url, Some(&json!({}))).await?;
                 if !resp.status().is_success() {
@@ -284,7 +307,7 @@ impl AcmeClient {
             }
         }
 
-        // ── 5. Poll until order is ready ─────────────────────────────────────
+        // ── 6. Poll until order is ready ─────────────────────────────────────
         tracing::info!("Polling for authorization...");
         let ready_result = self.poll_order_ready(&order_url, 120).await;
 
@@ -293,13 +316,13 @@ impl AcmeClient {
             return Err(e);
         }
 
-        // ── 6. Clean up DNS records ───────────────────────────────────────────
+        // ── 7. Clean up DNS records ───────────────────────────────────────────
         self.cleanup(&deployed, dns).await;
 
-        // ── 7. Generate cert key + CSR ────────────────────────────────────────
+        // ── 8. Generate cert key + CSR ────────────────────────────────────────
         let (privkey_pem, csr_der) = generate_csr(cn, &domains, key_algo)?;
 
-        // ── 8. Finalize order ─────────────────────────────────────────────────
+        // ── 9. Finalize order ─────────────────────────────────────────────────
         tracing::info!("Finalizing ACME order...");
         let fin_resp = self
             .post(&order.finalize, Some(&json!({"csr": b64url(&csr_der)})))
@@ -310,7 +333,7 @@ impl AcmeClient {
             anyhow::bail!("ACME finalize failed: {}", body);
         }
 
-        // ── 9. Poll until certificate is available ───────────────────────────
+        // ── 10. Poll until certificate is available ──────────────────────────
         let cert_chain = self.poll_certificate(&order_url, 120).await?;
         tracing::info!("Certificate issued for {}", cn);
 
@@ -479,6 +502,53 @@ impl AcmeClient {
                 }
                 "invalid" => anyhow::bail!("ACME order became invalid after finalize"),
                 _ => {}
+            }
+        }
+    }
+
+    /// Block until every authoritative nameserver for the challenge names
+    /// serves every value we just deployed.
+    ///
+    /// Best effort by design: if the check can't run (no NS discoverable, no
+    /// outbound DNS) we fall back to the provider's fixed `propagation_delay`,
+    /// and if it times out we notify anyway — the ACME server gets the final
+    /// say either way, and refusing to try guarantees a failure where pushing
+    /// on might not.
+    async fn await_dns_propagation(
+        &self,
+        wanted: &BTreeMap<String, BTreeSet<String>>,
+        dns: &dyn DnsProvider,
+    ) {
+        let expected: Vec<ExpectedTxt> = wanted
+            .iter()
+            .map(|(domain, values)| ExpectedTxt {
+                // Wildcard authorizations already arrive stripped of the `*.`
+                // by ACME, but be defensive: the challenge always lives at
+                // `_acme-challenge.<base domain>`.
+                fqdn: format!("_acme-challenge.{}", domain.trim_start_matches("*.")),
+                values: values.clone(),
+            })
+            .collect();
+
+        match dns_check::wait_for_propagation(&expected, DNS_PROPAGATION_TIMEOUT).await {
+            Ok(true) => {
+                tracing::info!("DNS challenge records visible on all authoritative nameservers");
+            }
+            Ok(false) => {
+                tracing::warn!(
+                    "Proceeding with ACME validation despite incomplete DNS propagation"
+                );
+            }
+            Err(e) => {
+                let delay = dns.propagation_delay();
+                tracing::warn!(
+                    "Could not verify DNS propagation ({:#}); falling back to a fixed {}s wait",
+                    e,
+                    delay
+                );
+                if delay > 0 {
+                    sleep(Duration::from_secs(delay)).await;
+                }
             }
         }
     }

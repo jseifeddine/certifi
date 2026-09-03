@@ -56,6 +56,7 @@ Request a certificate. **Idempotent** on the normalized `(common_name, sorted SA
 
 - Existing `status='active'` cert with the same combo → returned as-is, `deduplicated: true`, HTTP `200`.
 - In-flight `pending`/`issuing` cert with the same combo → returned as-is, `deduplicated: true`, HTTP `200`.
+- Existing `status='failed'` cert with the same combo → **retried in place**: the existing row flips to `pending` and issuance restarts on it. `deduplicated: true`, HTTP `202 Accepted`. No second row is created for domains that already have a cert.
 - Otherwise → pre-flight zone validation runs (each domain must be covered by some configured integration's zone). New row inserted, async issuance kicked off, HTTP `202 Accepted`.
 
 **Request:**
@@ -91,7 +92,7 @@ Request a certificate. **Idempotent** on the normalized `(common_name, sorted SA
 }
 ```
 
-**Response (dedup hit) `200`:** same shape, with `deduplicated: true` and the existing cert's `status` (typically `active`).
+**Response (dedup hit) `200`:** same shape, with `deduplicated: true` and the existing cert's `status` (typically `active`). A retry of a failed cert answers `202` with `deduplicated: true` and `status: "pending"` — same id as the existing cert.
 
 **Errors:**
 - `400` — `common_name` empty, `key_algo` invalid, no DNS integrations configured, or one or more domains not covered by any managed zone.

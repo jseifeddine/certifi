@@ -19,8 +19,17 @@ pub mod pdns;
 /// Add new providers by implementing this + a build branch below.
 #[async_trait::async_trait]
 pub trait DnsProvider: Send + Sync {
-    /// Place a TXT record: `_acme-challenge.<domain>` = `<token_value>`
-    async fn deploy_challenge(&self, domain: &str, token_value: &str) -> Result<()>;
+    /// Publish the TXT RRset `_acme-challenge.<domain>` with exactly
+    /// `token_values` — replacing whatever is there, stale values included.
+    ///
+    /// Takes a *set* rather than a single value because one name can need
+    /// several: a cert covering `example.com` and `*.example.com` gets two
+    /// authorizations whose challenge records share the FQDN
+    /// `_acme-challenge.example.com` but carry different values, and both must
+    /// be live at the same time. Deploying them one at a time would have the
+    /// second overwrite the first and the first authorization would fail with
+    /// "Incorrect TXT record ... found".
+    async fn deploy_challenge(&self, domain: &str, token_values: &[String]) -> Result<()>;
 
     /// Remove the TXT record for `_acme-challenge.<domain>`
     async fn clean_challenge(&self, domain: &str) -> Result<()>;
@@ -30,6 +39,12 @@ pub trait DnsProvider: Send + Sync {
     async fn list_zones(&self) -> Result<Vec<String>>;
 
     /// Seconds to wait after deploying the record before notifying ACME.
+    ///
+    /// Only a fallback: issuance normally polls the zone's authoritative
+    /// nameservers until they all serve the record (see
+    /// `services::dns_check`), and this fixed sleep is used solely when that
+    /// check can't run — e.g. the container has no outbound DNS, or the zone's
+    /// NS records aren't resolvable.
     fn propagation_delay(&self) -> u64;
 
     /// Human-readable name for display.
@@ -127,9 +142,9 @@ impl DnsProvider for MultiDnsProvider {
             .unwrap_or(5)
     }
 
-    async fn deploy_challenge(&self, domain: &str, token_value: &str) -> Result<()> {
+    async fn deploy_challenge(&self, domain: &str, token_values: &[String]) -> Result<()> {
         let p = self.route(domain).await?;
-        p.deploy_challenge(domain, token_value).await
+        p.deploy_challenge(domain, token_values).await
     }
 
     async fn clean_challenge(&self, domain: &str) -> Result<()> {
@@ -297,7 +312,7 @@ pub fn available_integrations() -> Vec<IntegrationMeta> {
             fields: vec![
                 IntegrationField { key: "pdns_url", label: "API URL", field_type: "text", required: true, default: "", placeholder: "https://pdns-api.example.com or http://10.0.0.1:8081", hint: "Full URL including scheme (http:// or https://) and, if non-default, port" },
                 IntegrationField { key: "pdns_key", label: "API Key", field_type: "password", required: true, default: "", placeholder: "", hint: "" },
-                IntegrationField { key: "pdns_wait", label: "Propagation Delay (seconds)", field_type: "number", required: false, default: "5", placeholder: "5", hint: "Seconds to wait after DNS record is deployed before notifying ACME" },
+                IntegrationField { key: "pdns_wait", label: "Propagation Delay (seconds)", field_type: "number", required: false, default: "5", placeholder: "5", hint: "Fallback only. Issuance polls the zone's authoritative nameservers until every one of them serves the challenge record; this fixed sleep is used only if that check can't run." },
                 IntegrationField { key: "pdns_server", label: "Server ID (optional)", field_type: "text", required: false, default: "", placeholder: "localhost", hint: "Leave blank to auto-detect" },
             ],
         },
@@ -306,7 +321,7 @@ pub fn available_integrations() -> Vec<IntegrationMeta> {
             name: "Cloudflare",
             fields: vec![
                 IntegrationField { key: "cf_api_token", label: "API Token", field_type: "password", required: true, default: "", placeholder: "", hint: "Scoped token with Zone:DNS:Edit + Zone:Zone:Read. Create at dash.cloudflare.com → My Profile → API Tokens." },
-                IntegrationField { key: "cf_wait", label: "Propagation Delay (seconds)", field_type: "number", required: false, default: "10", placeholder: "10", hint: "Cloudflare propagates very fast; 10s is usually enough." },
+                IntegrationField { key: "cf_wait", label: "Propagation Delay (seconds)", field_type: "number", required: false, default: "10", placeholder: "10", hint: "Fallback only. Issuance polls the zone's authoritative nameservers until every one of them serves the challenge record; this fixed sleep is used only if that check can't run." },
             ],
         },
         IntegrationMeta {
@@ -314,7 +329,7 @@ pub fn available_integrations() -> Vec<IntegrationMeta> {
             name: "DigitalOcean",
             fields: vec![
                 IntegrationField { key: "do_api_token", label: "API Token", field_type: "password", required: true, default: "", placeholder: "", hint: "Personal access token with read+write on Domain Records (cloud.digitalocean.com → API → Tokens)." },
-                IntegrationField { key: "do_wait", label: "Propagation Delay (seconds)", field_type: "number", required: false, default: "30", placeholder: "30", hint: "DO can take ~30s to propagate to all nameservers." },
+                IntegrationField { key: "do_wait", label: "Propagation Delay (seconds)", field_type: "number", required: false, default: "30", placeholder: "30", hint: "Fallback only. Issuance polls the zone's authoritative nameservers until every one of them serves the challenge record; this fixed sleep is used only if that check can't run." },
             ],
         },
         IntegrationMeta {
@@ -371,7 +386,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl DnsProvider for FakeProvider {
-        async fn deploy_challenge(&self, _domain: &str, _token_value: &str) -> Result<()> {
+        async fn deploy_challenge(&self, _domain: &str, _token_values: &[String]) -> Result<()> {
             Ok(())
         }
         async fn clean_challenge(&self, _domain: &str) -> Result<()> {

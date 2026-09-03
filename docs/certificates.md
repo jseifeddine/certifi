@@ -73,6 +73,7 @@ If you have zero integrations configured, every cert request gets a clear `400`:
 
 - If a `status='active'` cert with the same combination already exists, the server returns that cert and sets `deduplicated: true` on the response. Status code is `200 OK` rather than `202 Accepted`.
 - If a `pending`/`issuing` cert with the same combination is in flight, the server folds the new request onto it (also `deduplicated: true`) instead of returning `409`. Two concurrent POSTs therefore never double-issue.
+- If a `failed` cert with the same combination exists, the server **retries that cert** rather than creating a second one: the existing row flips back to `pending` and issuance restarts on it (`202`, `deduplicated: true`). The row keeps its id, description, auto-renew setting and — for a failed *renewal* — its still-valid key and chain, so anything already pointing at that cert id keeps working.
 - Otherwise the server creates a new row and starts issuance asynchronously.
 
 Normalization: trim, lowercase, strip trailing dots, dedupe SANs, drop the CN if it's repeated in the SAN list. So `Example.COM` + `[example.com., www.example.com]` is treated as `example.com` + `[www.example.com]`.
@@ -85,7 +86,8 @@ The renewal scheduler runs **30 seconds after startup**, then every **24 hours**
 
 - Certificates with `auto_renew: true` and `< 30 days` to expiry are renewed automatically.
 - Certificates with `auto_renew: false` and `< 30 days` to expiry trigger a **warning email** (if SMTP is configured) but are not renewed.
-- Renewal failures are recorded in the certificate's `error` field and trigger a failure email.
+- Certificates with `auto_renew: true` that are `failed` are retried on the same daily pass (those never issued, or already inside the 30-day window). Without this a single bad run — expired DNS credentials, a provider outage — would park the cert in `failed` forever and it would silently expire.
+- Renewal failures are recorded in the certificate's `error` field and trigger a failure email. The email is sent on the transition *into* `failed` only: a cert that's already failing is retried daily and doesn't re-alert every day.
 
 Force an immediate renewal via the web admin, `POST /api/certificates/:id/renew`, or `certifi-cli renew <id-or-cn>`.
 

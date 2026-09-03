@@ -1,11 +1,17 @@
 import { api } from './client';
-import type { Certificate, CreateCertRequest, PemBundle, PfxResponse } from '../types';
+import type {
+  Certificate,
+  CreateCertRequest,
+  CreateCertResponse,
+  PemBundle,
+  PfxResponse,
+} from '../types';
 
 export const certsApi = {
   list: () => api.get<Certificate[]>('/api/certificates'),
   get: (id: string) => api.get<Certificate>(`/api/certificates/${id}`),
-  create: (req: CreateCertRequest) => api.post<Certificate>('/api/certificates', req),
-  renew: (id: string) => api.post<Certificate>(`/api/certificates/${id}/renew`),
+  create: (req: CreateCertRequest) => api.post<CreateCertResponse>('/api/certificates', req),
+  renew: (id: string) => api.post<CreateCertResponse>(`/api/certificates/${id}/renew`),
   delete: (id: string) => api.delete<{ ok: true }>(`/api/certificates/${id}`),
   setAutoRenew: (id: string, autoRenew: boolean) =>
     api.put<{ ok: true }>(`/api/certificates/${id}/auto-renew`, { auto_renew: autoRenew }),

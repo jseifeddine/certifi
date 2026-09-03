@@ -159,8 +159,10 @@ fn cert_domains(cert: &Certificate) -> Vec<String> {
     security(("bearer" = [])),
     request_body = IssueCertRequest,
     responses(
-        (status = 202, description = "New cert queued for issuance. \
-                                       Poll `GET /api/certificates/{id}` for status.",
+        (status = 202, description = "Issuance queued — either for a new cert, or on the \
+                                       existing row when a previously `failed` cert with the \
+                                       same `(common_name, sans)` was found (`deduplicated` is \
+                                       `true` in that case). Poll `GET /api/certificates/{id}`.",
             body = IssueCertResponse),
         (status = 200, description = "Idempotent hit — an existing active or in-flight \
                                        cert with the same `(common_name, sans)` was returned. \
@@ -309,6 +311,63 @@ pub async fn create(
         )));
     }
 
+    // A previous cert for this exact (CN, SAN set) that ended in `failed` is
+    // still *the* cert for these domains: it owns the description, the
+    // auto-renew setting, the id external consumers already reference, and —
+    // when the failure was a renewal — the last good key/chain material. Re-
+    // drive issuance on that row rather than inserting a duplicate. No extra
+    // permission check: the caller already cleared certificate.create for this
+    // exact domain set at the top of the handler.
+    if let Some(prev) = find_matching_failed_cert(&state.db, &cn, &sans).await? {
+        let now = Utc::now().to_rfc3339();
+        sqlx::query(
+            "UPDATE certificates SET status='pending', error=NULL, updated_at=? WHERE id=?",
+        )
+        .bind(&now)
+        .bind(&prev.id)
+        .execute(&state.db)
+        .await?;
+        emit(&state.events, CertEvent::changed(&prev.id));
+
+        audit::log(
+            &state.db,
+            &auth,
+            "certificate.retry",
+            "certificate",
+            Some(&prev.id),
+            None,
+            Some(serde_json::json!({
+                "common_name": &prev.common_name,
+                "sans": &sans,
+                "previous_error": &prev.error,
+            })),
+        )
+        .await;
+
+        spawn_issuance(
+            &state,
+            &prev.id,
+            &cn,
+            &sans,
+            prev.key_algo.as_deref(),
+            "retry",
+        );
+
+        return Ok((
+            StatusCode::ACCEPTED,
+            Json(IssueCertResponse {
+                id: prev.id,
+                status: "pending".into(),
+                common_name: prev.common_name,
+                sans,
+                auto_renew: prev.auto_renew,
+                key_algo: prev.key_algo,
+                description: prev.description,
+                deduplicated: true,
+            }),
+        ));
+    }
+
     let id = Uuid::new_v4().to_string();
     let now = Utc::now().to_rfc3339();
     let sans_json = serde_json::to_string(&sans).unwrap();
@@ -329,47 +388,7 @@ pub async fn create(
     .await?;
     emit(&state.events, CertEvent::changed(&id));
 
-    let db = state.db.clone();
-    let config = state.config.clone();
-    let events = state.events.clone();
-    let id_clone = id.clone();
-    let cn_clone = cn.clone();
-    let sans_clone = sans.clone();
-    let key_algo_clone = key_algo.clone();
-
-    tokio::spawn(async move {
-        let settings = match load_effective_settings(&db, &config).await {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!("Failed to load settings for issuance: {:?}", e);
-                return;
-            }
-        };
-        if let Err(e) = run_issuance(
-            &db,
-            &settings,
-            &events,
-            &id_clone,
-            &cn_clone,
-            &sans_clone,
-            key_algo_clone.as_deref(),
-        )
-        .await
-        {
-            let msg = e.to_string();
-            tracing::error!("Issuance task error for {}: {}", cn_clone, msg);
-            let now = Utc::now().to_rfc3339();
-            let _ = sqlx::query(
-                "UPDATE certificates SET status='failed', error=?, updated_at=? WHERE id=?",
-            )
-            .bind(&msg)
-            .bind(&now)
-            .bind(&id_clone)
-            .execute(&db)
-            .await;
-            emit(&events, CertEvent::changed(&id_clone));
-        }
-    });
+    spawn_issuance(&state, &id, &cn, &sans, key_algo.as_deref(), "issuance");
 
     audit::log(
         &state.db,
@@ -458,45 +477,8 @@ pub async fn renew(
     let cn = cert.common_name.clone();
     let auto_renew = cert.auto_renew;
     let key_algo = cert.key_algo.clone();
-    let db = state.db.clone();
-    let config = state.config.clone();
-    let events = state.events.clone();
-    let id_clone = id.clone();
-    let key_algo_clone = key_algo.clone();
 
-    tokio::spawn(async move {
-        let settings = match load_effective_settings(&db, &config).await {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!("Failed to load settings for renewal: {:?}", e);
-                return;
-            }
-        };
-        if let Err(e) = run_issuance(
-            &db,
-            &settings,
-            &events,
-            &id_clone,
-            &cn,
-            &sans,
-            key_algo_clone.as_deref(),
-        )
-        .await
-        {
-            let msg = e.to_string();
-            tracing::error!("Renewal task error for {}: {}", cn, msg);
-            let now = Utc::now().to_rfc3339();
-            let _ = sqlx::query(
-                "UPDATE certificates SET status='failed', error=?, updated_at=? WHERE id=?",
-            )
-            .bind(&msg)
-            .bind(&now)
-            .bind(&id_clone)
-            .execute(&db)
-            .await;
-            emit(&events, CertEvent::changed(&id_clone));
-        }
-    });
+    spawn_issuance(&state, &id, &cn, &sans, key_algo.as_deref(), "renewal");
 
     Ok((
         StatusCode::ACCEPTED,
@@ -927,6 +909,17 @@ async fn find_matching_in_flight_cert(
     find_matching_cert(db, cn, sans, &["pending", "issuing"]).await
 }
 
+/// Find a cert whose last issuance/renewal attempt failed. A `failed` row is
+/// still the cert of record for its domains, so POSTing the same request must
+/// retry it rather than create a second row for the same names.
+async fn find_matching_failed_cert(
+    db: &sqlx::SqlitePool,
+    cn: &str,
+    sans: &[String],
+) -> Result<Option<Certificate>> {
+    find_matching_cert(db, cn, sans, &["failed"]).await
+}
+
 /// Internal: scan rows where the common_name matches (case-insensitive, dot-
 /// stripped) and status is one of the given values, then pick the first whose
 /// normalized SAN set equals the requested one. Performance-fine for small
@@ -965,6 +958,75 @@ async fn find_matching_cert(
         }
     }
     Ok(None)
+}
+
+/// Queue ACME issuance for a row that is already in `pending`, on a detached
+/// task. Shared by create / retry / renew — all three want the same failure
+/// handling: park the row in `failed` with the error text so the UI can show
+/// it and the daily scheduler can pick it up again.
+///
+/// `what` only labels the log lines ("issuance", "retry", "renewal").
+fn spawn_issuance(
+    state: &AppState,
+    id: &str,
+    cn: &str,
+    sans: &[String],
+    key_algo: Option<&str>,
+    what: &'static str,
+) {
+    let db = state.db.clone();
+    let config = state.config.clone();
+    let events = state.events.clone();
+    let id = id.to_string();
+    let cn = cn.to_string();
+    let sans = sans.to_vec();
+    let key_algo = key_algo.map(str::to_string);
+
+    tokio::spawn(async move {
+        let settings = match load_effective_settings(&db, &config).await {
+            Ok(s) => s,
+            Err(e) => {
+                // Bail out loudly: leaving the row in `pending` would strand it
+                // forever, since only `active`/`failed` rows get re-examined.
+                let msg = format!("could not load settings: {}", e);
+                tracing::error!("Failed to start {} for {}: {:?}", what, cn, e);
+                mark_failed(&db, &events, &id, &msg).await;
+                return;
+            }
+        };
+        if let Err(e) = run_issuance(
+            &db,
+            &settings,
+            &events,
+            &id,
+            &cn,
+            &sans,
+            key_algo.as_deref(),
+        )
+        .await
+        {
+            let msg = e.to_string();
+            tracing::error!("{} task error for {}: {}", what, cn, msg);
+            mark_failed(&db, &events, &id, &msg).await;
+        }
+    });
+}
+
+async fn mark_failed(
+    db: &sqlx::SqlitePool,
+    events: &crate::events::CertEventSender,
+    id: &str,
+    msg: &str,
+) {
+    let now = Utc::now().to_rfc3339();
+    let _ =
+        sqlx::query("UPDATE certificates SET status='failed', error=?, updated_at=? WHERE id=?")
+            .bind(msg)
+            .bind(&now)
+            .bind(id)
+            .execute(db)
+            .await;
+    emit(events, CertEvent::changed(id));
 }
 
 async fn load_effective_settings(

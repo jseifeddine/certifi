@@ -64,6 +64,19 @@ export interface CreateCertRequest {
   description?: string | null;
 }
 
+/** Response of POST /api/certificates (and .../renew). */
+export interface CreateCertResponse {
+  id: string;
+  status: Certificate['status'];
+  common_name: string;
+  sans: string[];
+  auto_renew: boolean;
+  key_algo: string | null;
+  description: string | null;
+  /** True when the server returned an existing cert instead of creating one. */
+  deduplicated: boolean;
+}
+
 export interface Token {
   id: string;
   name: string;

@@ -156,39 +156,42 @@ impl DnsProvider for CloudflareProvider {
         self.delay
     }
 
-    async fn deploy_challenge(&self, domain: &str, token_value: &str) -> Result<()> {
+    async fn deploy_challenge(&self, domain: &str, token_values: &[String]) -> Result<()> {
         let (zone_name, zone_id) = self.find_zone(domain).await?;
         let record_name = format!("_acme-challenge.{}", domain);
         tracing::info!(
-            "Cloudflare: deploying TXT {} → \"{}\" in zone {}",
+            "Cloudflare: deploying TXT {} → {} value(s) in zone {}",
             record_name,
-            token_value,
+            token_values.len(),
             zone_name
         );
 
-        // Idempotency: if a stale challenge record from a previous failed run
-        // is still there, drop it first so we don't end up with two TXTs and
-        // confuse the ACME server.
+        // Idempotency: drop stale challenge records from a previous failed run
+        // so the ACME server never sees a value we didn't just publish. Done
+        // once, before adding any of ours — cleaning per value would delete
+        // the siblings we need to keep.
         self.clean_challenge(domain).await.ok();
 
-        let url = format!("{}/zones/{}/dns_records", API_BASE, zone_id);
-        let body = json!({
-            "type": "TXT",
-            "name": record_name,
-            "content": token_value,
-            "ttl": 60,
-            "proxied": false,
-        });
-        let (k, v) = self.auth_header();
-        let resp = self
-            .http
-            .post(&url)
-            .header(k, v)
-            .json(&body)
-            .send()
-            .await
-            .with_context(|| format!("Cloudflare: POST {}", url))?;
-        parse_cf_response(resp, "POST", &url).await?;
+        for token_value in token_values {
+            let url = format!("{}/zones/{}/dns_records", API_BASE, zone_id);
+            let body = json!({
+                "type": "TXT",
+                "name": record_name,
+                "content": token_value,
+                "ttl": 60,
+                "proxied": false,
+            });
+            let (k, v) = self.auth_header();
+            let resp = self
+                .http
+                .post(&url)
+                .header(k, v)
+                .json(&body)
+                .send()
+                .await
+                .with_context(|| format!("Cloudflare: POST {}", url))?;
+            parse_cf_response(resp, "POST", &url).await?;
+        }
         Ok(())
     }
 

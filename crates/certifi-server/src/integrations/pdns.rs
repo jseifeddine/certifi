@@ -282,26 +282,37 @@ impl DnsProvider for PdnsProvider {
         self.delay
     }
 
-    async fn deploy_challenge(&self, domain: &str, token_value: &str) -> Result<()> {
+    async fn deploy_challenge(&self, domain: &str, token_values: &[String]) -> Result<()> {
         let (api_base, server_id, zone) = self.find_zone(domain).await?;
         let record_name = format!("_acme-challenge.{}.", domain);
 
         tracing::info!(
-            "PDNS: deploying TXT {} → \"{}\" in zone {}",
+            "PDNS: deploying TXT {} → {} value(s) in zone {}",
             record_name,
-            token_value,
+            token_values.len(),
             zone
         );
+
+        // A single REPLACE carrying the whole RRset: PowerDNS swaps the record
+        // set atomically, so every value lands in one bump of the zone serial
+        // and one NOTIFY to the secondaries. Sending them as separate REPLACEs
+        // would leave only the last one standing.
+        let records: Vec<Value> = token_values
+            .iter()
+            .map(|v| {
+                json!({
+                    "content": format!("\"{}\"", v),
+                    "disabled": false
+                })
+            })
+            .collect();
 
         let rrset = json!([{
             "name": record_name,
             "type": "TXT",
             "ttl": 1,
             "changetype": "REPLACE",
-            "records": [{
-                "content": format!("\"{}\"", token_value),
-                "disabled": false
-            }]
+            "records": records
         }]);
 
         self.patch_zone(&api_base, &server_id, &zone, rrset).await

@@ -17,16 +17,17 @@ pub struct IssueCertRequest {
     pub auto_renew: Option<bool>,
     #[serde(default)]
     pub key_algo: Option<String>,
-    /// Optional free-text label. Ignored on dedup hits — the existing cert's
-    /// description is preserved.
+    /// Optional free-text label. Ignored on dedup hits (including a retry of a
+    /// failed cert) — the existing cert's description is preserved.
     #[serde(default)]
     pub description: Option<String>,
 }
 
 /// POST /api/certificates and /api/certificates/:id/renew response.
 ///
-/// When the server deduplicates against an existing active cert, it returns
-/// that cert's id and current status here rather than creating a new row.
+/// When the server deduplicates against an existing cert it returns that
+/// cert's id and current status here rather than creating a new row — whether
+/// the match was active, in flight, or a `failed` cert being retried in place.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct IssueCertResponse {
     pub id: String,

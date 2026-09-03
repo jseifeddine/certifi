@@ -93,9 +93,9 @@ Server-internal types (DB row structs derived with `sqlx::FromRow`, setting-key 
 Many DNS integrations can coexist. They're persisted as rows in the `integrations` table (each row has `kind`, `name`, JSON `config`, `enabled`). At issuance time, `integrations::build_provider(&db)` reads every enabled row and constructs a `MultiDnsProvider`:
 
 - `list_zones()` queries every underlying provider and unions the results.
-- `deploy_challenge(domain, value)` walks providers in DB-insertion order and dispatches to the first one whose zones suffix-match the domain — **first-match wins** when zones overlap.
+- `deploy_challenge(domain, values)` walks providers in DB-insertion order and dispatches to the first one whose zones suffix-match the domain — **first-match wins** when zones overlap. It takes the whole value *set* for the name: a cert covering `example.com` and `*.example.com` needs two different TXT values live at `_acme-challenge.example.com` simultaneously, so providers publish the RRset in one call rather than one value at a time.
 - `clean_challenge(domain)` does the same routing on the way out.
-- `propagation_delay()` returns the max across configured providers, so the slowest one gets enough time.
+- `propagation_delay()` returns the max across configured providers. It's now only a fallback — see below.
 
 Adding/removing/disabling an integration takes effect on the next request — no restart needed.
 
@@ -111,7 +111,7 @@ The nginx config has a dedicated `location /api/events` block with `proxy_buffer
 
 1. `POST /api/certificates` lands at `handlers::certificates::create`.
 2. The handler normalizes `(common_name, sans)` and looks for a matching `status='active'` row — if found, returns it as a dedup hit (`deduplicated: true`).
-3. Same dedup check against `status IN ('pending','issuing')` so concurrent identical POSTs fold onto one issuance.
+3. Same dedup check against `status IN ('pending','issuing')` so concurrent identical POSTs fold onto one issuance, then against `status='failed'` — a match there is retried in place (existing row back to `pending`) instead of becoming a duplicate row.
 4. Pre-flight: build the `MultiDnsProvider` and verify every requested domain is covered by some managed zone. Fail with `400` if not — better than queueing a doomed ACME run.
 5. Insert a new row with `status='pending'`, emit `cert.changed`, spawn the issuance task.
 6. The task runs `services::renewal::run_issuance` which flips status to `issuing` (emits event), drives ACME via `services::acme`, and writes `status='active'` + PEM blobs + expiry on success (emits event).

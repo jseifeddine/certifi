@@ -1,4 +1,5 @@
 pub mod acme;
+pub mod dns_check;
 pub mod email;
 pub mod oidc;
 pub mod pfx;

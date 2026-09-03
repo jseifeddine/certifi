@@ -106,22 +106,24 @@ impl DnsProvider for GandiProvider {
         self.delay
     }
 
-    async fn deploy_challenge(&self, domain: &str, token_value: &str) -> Result<()> {
+    async fn deploy_challenge(&self, domain: &str, token_values: &[String]) -> Result<()> {
         let zone = self.find_zone(domain).await?;
         let name = Self::record_subname(domain, &zone);
         tracing::info!(
-            "Gandi: deploying TXT _acme-challenge.{} → \"{}\" in domain {}",
+            "Gandi: deploying TXT _acme-challenge.{} → {} value(s) in domain {}",
             domain,
-            token_value,
+            token_values.len(),
             zone
         );
 
         // PUT replaces the entire rrset for (name, TXT) — atomic and idempotent.
-        // Wrap the value in literal quotes per Gandi's expected TXT format.
+        // Every value goes in one request; a per-value PUT would drop the ones
+        // already there. Wrap each in literal quotes per Gandi's TXT format.
+        let values: Vec<String> = token_values.iter().map(|v| format!("\"{}\"", v)).collect();
         let url = format!("{}/domains/{}/records/{}/TXT", API_BASE, zone, name);
         let body = json!({
             "rrset_ttl": 300,
-            "rrset_values": [format!("\"{}\"", token_value)],
+            "rrset_values": values,
         });
         let resp = self
             .http

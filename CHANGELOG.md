@@ -6,6 +6,40 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.1.2] — 2026-09-03
+
+### Fixed
+
+- **Wildcard + apex certs no longer fail validation.** A cert covering `example.com` and
+  `*.example.com` gets two ACME authorizations whose challenge records share the FQDN
+  `_acme-challenge.example.com` but carry different values. Every provider deployed one value
+  at a time (PowerDNS `REPLACE`, Gandi `PUT`, and a clean-then-create in Cloudflare,
+  DigitalOcean and Hetzner), so the second wiped the first and the CA rejected the order with
+  `Incorrect TXT record ... found`. `DnsProvider::deploy_challenge` now takes the whole value
+  set for a name and providers publish the complete RRset in one call.
+- **Requesting a cert that already exists but failed no longer creates a duplicate row.**
+  `POST /api/certificates` deduplicated against `active` and `pending`/`issuing` certs only,
+  so re-requesting after a failure left two rows for the same domains — the new one without
+  the original's description, and the old one still holding the previously issued material.
+  A matching `failed` cert is now retried in place (same id, `202` + `deduplicated: true`).
+- **A failed renewal no longer strands a certificate forever.** The daily scheduler only looked
+  at `status='active'` rows, so one bad run (provider outage, expired credentials) parked the
+  cert in `failed` and auto-renew never fired again. Failed certs with `auto_renew` on are now
+  retried on the same daily pass. The failure email is sent on the transition into `failed`
+  only, so a persistently broken cert doesn't mail every day.
+- Issuance no longer strands a cert in `pending` when loading settings for the background task
+  fails — the row is marked `failed` with the error, which also makes it eligible for retry.
+
+### Changed
+
+- **DNS propagation is now verified, not guessed.** After publishing the challenge records,
+  issuance resolves the zone's authoritative nameservers and queries each of them directly,
+  once a second, until they all serve every expected TXT value (up to 5 minutes) — then tells
+  the CA to validate. This fixes intermittent failures on hidden-primary setups where the API
+  write lands on the primary but ns1/ns2 haven't received the NOTIFY/AXFR yet. The
+  per-integration **Propagation Delay** is now only a fallback for when the check can't run
+  (no outbound DNS, unresolvable NS records).
+
 ## [1.1.1] — 2026-06-30
 
 ### Fixed
@@ -67,7 +101,8 @@ First production release.
   crypto helpers); `rustfmt` + `clippy -D warnings` enforced in CI; and a sidebar footer showing
   the running version linked to its GitHub release alongside a version-pinned Docs link.
 
-[Unreleased]: https://github.com/jseifeddine/certifi/compare/v1.1.1...HEAD
+[Unreleased]: https://github.com/jseifeddine/certifi/compare/v1.1.2...HEAD
+[1.1.2]: https://github.com/jseifeddine/certifi/compare/v1.1.1...v1.1.2
 [1.1.1]: https://github.com/jseifeddine/certifi/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/jseifeddine/certifi/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/jseifeddine/certifi/releases/tag/v1.0.0

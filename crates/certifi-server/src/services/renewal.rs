@@ -57,6 +57,31 @@ async fn check_renewals(
         renew_cert(db, cert, &settings, events, &notifier, &recipients).await;
     }
 
+    // Certs whose last attempt failed. Without this pass a single bad run
+    // (DNS provider hiccup, expired API token, ACME rate limit) parks the row
+    // in `failed` forever: the query above only looks at `active` rows, so
+    // auto-renew never fires again and the cert silently expires. Retried on
+    // the same daily cadence — either it's already inside the renewal window
+    // or it never got issued at all (expires_at IS NULL).
+    let retry: Vec<Certificate> = sqlx::query_as(
+        "SELECT * FROM certificates
+         WHERE auto_renew = 1
+           AND status = 'failed'
+           AND (expires_at IS NULL OR expires_at < ?)",
+    )
+    .bind(&threshold_str)
+    .fetch_all(db)
+    .await?;
+
+    for cert in &retry {
+        tracing::info!(
+            "Retrying failed certificate {} (last error: {})",
+            cert.common_name,
+            cert.error.as_deref().unwrap_or("unknown")
+        );
+        renew_cert(db, cert, &settings, events, &notifier, &recipients).await;
+    }
+
     // Certs with auto_renew=0 that are expiring — just warn
     let expiring: Vec<Certificate> = sqlx::query_as(
         "SELECT * FROM certificates
@@ -98,6 +123,10 @@ async fn renew_cert(
     notifier: &EmailNotifier,
     recipients: &[String],
 ) {
+    // Only alert on the transition into `failed`. A cert that was already
+    // failing is retried every day, and a daily "renewal failed" email for the
+    // same known-broken cert is noise that trains operators to ignore it.
+    let notify_on_failure = cert.status != "failed";
     let now = Utc::now().to_rfc3339();
     let _ = sqlx::query(
         "UPDATE certificates SET status='pending', error=NULL, updated_at=? WHERE id=?",
@@ -146,7 +175,7 @@ async fn renew_cert(
             .await;
             emit(events, CertEvent::changed(&cert_id));
 
-            if !recipients.is_empty() {
+            if notify_on_failure && !recipients.is_empty() {
                 notifier.send_renewal_failure(recipients, &cn, &msg).await;
             }
         }

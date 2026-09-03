@@ -5,6 +5,7 @@ import { domainsApi } from '../api/domains';
 import { ScrollText } from 'lucide-react';
 const IconCert = (p: React.SVGProps<SVGSVGElement>) => <ScrollText className="h-4 w-4" {...p} />;
 import { usePageTitle } from '../components/Layout';
+import { useToast } from '../components/Toast';
 
 interface ZoneMatch {
   prefix: string;
@@ -107,6 +108,7 @@ function DomainInput({
 export function CertificateNew() {
   usePageTitle('New Certificate');
   const navigate = useNavigate();
+  const toast = useToast();
   const [cn, setCn] = useState('');
   const [sans, setSans] = useState<string[]>([]);
   const [sanInput, setSanInput] = useState('');
@@ -145,6 +147,17 @@ export function CertificateNew() {
         key_algo: keyAlgo || null,
         description: description.trim() || null,
       });
+      // The server is idempotent on (CN, SAN set): an existing cert for the
+      // same domains is returned instead of a second one being created, and a
+      // previously failed one is retried in place. Say so, otherwise landing
+      // on a cert with someone else's description looks like a bug.
+      if (result.deduplicated) {
+        toast.info(
+          result.status === 'pending' || result.status === 'issuing'
+            ? 'A certificate for these domains already exists — retrying it instead of creating a duplicate.'
+            : 'A certificate for these domains already exists — opened it instead of creating a duplicate.',
+        );
+      }
       navigate(`/certificates/${result.id}`);
     } catch (ex) {
       setError(ex instanceof Error ? ex.message : 'Failed to issue');

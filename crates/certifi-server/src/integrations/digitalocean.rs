@@ -126,42 +126,45 @@ impl DnsProvider for DigitalOceanProvider {
         self.delay
     }
 
-    async fn deploy_challenge(&self, domain: &str, token_value: &str) -> Result<()> {
+    async fn deploy_challenge(&self, domain: &str, token_values: &[String]) -> Result<()> {
         let zone = self.find_zone(domain).await?;
         let name = Self::record_subname(domain, &zone);
         tracing::info!(
-            "DigitalOcean: deploying TXT _acme-challenge.{} → \"{}\" in domain {}",
+            "DigitalOcean: deploying TXT _acme-challenge.{} → {} value(s) in domain {}",
             domain,
-            token_value,
+            token_values.len(),
             zone
         );
 
-        // Clean any stale record first so we don't accumulate duplicates.
+        // Clean stale records once, up front — a per-value clean would delete
+        // the sibling values this same challenge needs (wildcard + apex).
         self.clean_challenge(domain).await.ok();
 
-        let url = format!("{}/domains/{}/records", API_BASE, zone);
-        let body = json!({
-            "type": "TXT",
-            "name": name,
-            "data": token_value,
-            "ttl": 30,
-        });
-        let resp = self
-            .http
-            .post(&url)
-            .header("Authorization", self.bearer())
-            .json(&body)
-            .send()
-            .await
-            .with_context(|| format!("DigitalOcean: POST {}", url))?;
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!(
-                "DigitalOcean: create record failed (HTTP {}): {}",
-                status,
-                body
-            );
+        for token_value in token_values {
+            let url = format!("{}/domains/{}/records", API_BASE, zone);
+            let body = json!({
+                "type": "TXT",
+                "name": name,
+                "data": token_value,
+                "ttl": 30,
+            });
+            let resp = self
+                .http
+                .post(&url)
+                .header("Authorization", self.bearer())
+                .json(&body)
+                .send()
+                .await
+                .with_context(|| format!("DigitalOcean: POST {}", url))?;
+            if !resp.status().is_success() {
+                let status = resp.status();
+                let body = resp.text().await.unwrap_or_default();
+                anyhow::bail!(
+                    "DigitalOcean: create record failed (HTTP {}): {}",
+                    status,
+                    body
+                );
+            }
         }
         Ok(())
     }

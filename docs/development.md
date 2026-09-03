@@ -90,7 +90,7 @@ There are no down migrations. If you need to nuke state in dev: `rm -rf data/`.
    #[async_trait::async_trait]
    impl super::DnsProvider for MyProvider {
        fn name(&self) -> &'static str { "My Provider" }
-       fn propagation_delay(&self) -> u64 { 10 }
+       fn propagation_delay(&self) -> u64 { 10 } // fallback only; see dns-providers.md
        async fn deploy_challenge(&self, domain: &str, value: &str) -> anyhow::Result<()> { … }
        async fn clean_challenge(&self, domain: &str) -> anyhow::Result<()> { … }
        async fn list_zones(&self) -> anyhow::Result<Vec<String>> { … }

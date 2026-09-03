@@ -52,6 +52,11 @@ rcgen = "0.13"
 p12 = "0.6"
 x509-parser = "0.16"
 
+# DNS resolution. Used to confirm a dns-01 challenge record is live on every
+# authoritative nameserver for the zone before telling the ACME server to
+# validate — a fixed sleep can't cover a slow primary → secondary transfer.
+hickory-resolver = { version = "0.24", default-features = false, features = ["tokio-runtime", "system-config"] }
+
 # HTTP client (rustls = no system TLS dep)
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 

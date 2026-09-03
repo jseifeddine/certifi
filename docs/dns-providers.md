@@ -21,12 +21,35 @@ The first integration (by creation timestamp) wins for any domain its zones cove
 Each provider implements the `DnsProvider` trait in `crates/certifi-server/src/integrations/mod.rs`:
 
 ```rust
-async fn deploy_challenge(&self, domain: &str, token_value: &str) -> Result<()>;
+async fn deploy_challenge(&self, domain: &str, token_values: &[String]) -> Result<()>;
 async fn clean_challenge(&self, domain: &str) -> Result<()>;
 async fn list_zones(&self) -> Result<Vec<String>>;
 fn propagation_delay(&self) -> u64;
 fn name(&self) -> &'static str;
 ```
+
+`deploy_challenge` receives the **complete set** of TXT values for
+`_acme-challenge.<domain>` and must publish exactly those, replacing whatever
+is there. One name can legitimately need several values at once: a cert for
+`example.com` + `*.example.com` produces two authorizations that share the
+challenge name but carry different tokens. An implementation that writes one
+value at a time (or cleans before each write) makes the second overwrite the
+first, and the CA rejects the order with `Incorrect TXT record ... found`.
+
+## Propagation waiting
+
+After the records are published, issuance resolves the zone's authoritative
+nameservers (walking up from the challenge name until it finds an NS RRset) and
+queries **each one directly**, once a second, until they all serve every
+expected value — up to 5 minutes. Only then is the CA told to validate.
+
+This is what makes hidden-primary setups safe: PowerDNS accepts the API write
+immediately, but ns1/ns2 only have it after the NOTIFY/AXFR lands, and a CA that
+validates in between sees the old RRset.
+
+The per-integration **Propagation Delay** is now just a fallback for when that
+check can't run at all (no outbound DNS from the container, or unresolvable NS
+records). It is not used when the check succeeds.
 
 `available_integrations()` returns metadata (id, name, fields) that drives the web admin's "Add Integration" form. Adding a new kind requires no UI changes for new field types. See [development.md](development.md#adding-a-dns-provider) for the step-by-step.
 
@@ -50,7 +73,7 @@ Self-hosted, suitable when you run your own authoritative DNS.
 |---|---|
 | API URL (`pdns_url`) | Full URL incl. scheme — e.g. `https://pdns-api.example.com` (TLS) or `http://10.0.0.1:8081` (plain). Self-signed certs are accepted. |
 | API Key (`pdns_key`) | The `api-key` value from your `pdns.conf` |
-| Propagation Delay (`pdns_wait`) | Seconds to wait after creating the TXT before notifying the CA. Increase (e.g. `30`) if you have secondaries that need time to sync. |
+| Propagation Delay (`pdns_wait`) | Fallback sleep only — secondaries syncing late are handled by the authoritative-nameserver poll described above, so this rarely matters now. |
 | Server ID (`pdns_server`) | Leave blank for auto-detect. Set explicitly if auto-detect fails (usually `localhost`). |
 
 Certifi sends a PDNS `NOTIFY` after each record change to trigger immediate zone transfer to secondaries.
@@ -62,7 +85,7 @@ The recommended setup for most users — scoped API tokens, very fast propagatio
 | Field (config key) | Description |
 |---|---|
 | API Token (`cf_api_token`) | Create at [Cloudflare → My Profile → API Tokens](https://dash.cloudflare.com/profile/api-tokens). Use a **Custom token** with the minimum scopes below. |
-| Propagation Delay (`cf_wait`) | `10` is usually enough. |
+| Propagation Delay (`cf_wait`) | `10`. Fallback only — see [Propagation waiting](#propagation-waiting). |
 
 **Required token permissions:**
 
@@ -76,7 +99,7 @@ The legacy Global API Key flow is **not** supported — it has no scoping.
 | Field (config key) | Description |
 |---|---|
 | API Token (`do_api_token`) | Create at [DigitalOcean → API → Tokens](https://cloud.digitalocean.com/account/api/tokens). Needs **read + write** scope on the Domain Records resource. |
-| Propagation Delay (`do_wait`) | `30` — DO can take ~30s to propagate to all nameservers. |
+| Propagation Delay (`do_wait`) | `30`. Fallback only — see [Propagation waiting](#propagation-waiting). |
 
 DigitalOcean has no zone-lookup-by-name endpoint, so Certifi lists every domain on the account and suffix-matches in Rust. The token therefore needs visibility into every domain you want to issue for.
 
@@ -98,7 +121,7 @@ Popular for many European users since Gandi is also a registrar.
 | Personal Access Token (`gandi_pat`) | Create at [account.gandi.net → Authentication → Personal Access Token](https://account.gandi.net). Scope to the right organization and grant DNS management on the domains you'll issue for. |
 | Propagation Delay (`gandi_wait`) | `10` |
 
-Gandi groups TXT records by `(name, type)` rrsets. Certifi's `deploy_challenge` uses `PUT` to replace the rrset atomically — clearing any leftover challenge from a previous failed run in the same call.
+Gandi groups TXT records by `(name, type)` rrsets. Certifi's `deploy_challenge` uses `PUT` to replace the rrset atomically with every value the challenge needs — clearing any leftover challenge from a previous failed run in the same call.
 
 ---
 

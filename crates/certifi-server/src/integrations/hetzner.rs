@@ -118,39 +118,43 @@ impl DnsProvider for HetznerProvider {
         self.delay
     }
 
-    async fn deploy_challenge(&self, domain: &str, token_value: &str) -> Result<()> {
+    async fn deploy_challenge(&self, domain: &str, token_values: &[String]) -> Result<()> {
         let (zone_name, zone_id) = self.find_zone(domain).await?;
         let name = Self::record_subname(domain, &zone_name);
         tracing::info!(
-            "Hetzner: deploying TXT _acme-challenge.{} → \"{}\" in zone {}",
+            "Hetzner: deploying TXT _acme-challenge.{} → {} value(s) in zone {}",
             domain,
-            token_value,
+            token_values.len(),
             zone_name
         );
 
+        // Once, before adding ours: cleaning between values would delete the
+        // siblings a wildcard + apex challenge needs to have live together.
         self.clean_challenge(domain).await.ok();
 
-        let url = format!("{}/records", API_BASE);
-        let body = json!({
-            "value": token_value,
-            "ttl": 60,
-            "type": "TXT",
-            "name": name,
-            "zone_id": zone_id,
-        });
-        let (k, v) = self.auth();
-        let resp = self
-            .http
-            .post(&url)
-            .header(k, v)
-            .json(&body)
-            .send()
-            .await
-            .with_context(|| format!("Hetzner: POST {}", url))?;
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!("Hetzner: create record failed (HTTP {}): {}", status, body);
+        for token_value in token_values {
+            let url = format!("{}/records", API_BASE);
+            let body = json!({
+                "value": token_value,
+                "ttl": 60,
+                "type": "TXT",
+                "name": name,
+                "zone_id": zone_id,
+            });
+            let (k, v) = self.auth();
+            let resp = self
+                .http
+                .post(&url)
+                .header(k, v)
+                .json(&body)
+                .send()
+                .await
+                .with_context(|| format!("Hetzner: POST {}", url))?;
+            if !resp.status().is_success() {
+                let status = resp.status();
+                let body = resp.text().await.unwrap_or_default();
+                anyhow::bail!("Hetzner: create record failed (HTTP {}): {}", status, body);
+            }
         }
         Ok(())
     }

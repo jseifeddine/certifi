@@ -223,8 +223,9 @@ impl Client {
         .await
     }
 
-    /// POST /api/certificates. Idempotent on (CN, SAN set): if a matching
-    /// valid cert exists, the server returns it with `deduplicated = true`.
+    /// POST /api/certificates. Idempotent on (CN, SAN set): if a matching cert
+    /// exists the server returns it with `deduplicated = true` — already valid,
+    /// still being issued, or `failed` and now retried in place.
     pub async fn create_certificate(&self, req: &IssueCertRequest) -> Result<IssueCertResponse> {
         self.json_request(reqwest::Method::POST, "certificates", Some(req))
             .await
