@@ -38,14 +38,25 @@ first, and the CA rejects the order with `Incorrect TXT record ... found`.
 
 ## Propagation waiting
 
-After the records are published, issuance resolves the zone's authoritative
-nameservers (walking up from the challenge name until it finds an NS RRset) and
-queries **each one directly**, once a second, until they all serve every
-expected value — up to 5 minutes. Only then is the CA told to validate.
+After the records are published, issuance finds the zone's authoritative
+nameservers and queries **each one directly**, once a second, until they all
+serve every expected value — up to 5 minutes. Only then is the CA told to
+validate.
 
 This is what makes hidden-primary setups safe: PowerDNS accepts the API write
 immediately, but ns1/ns2 only have it after the NOTIFY/AXFR lands, and a CA that
 validates in between sees the old RRset.
+
+Finding those nameservers is done by an **iterative walk from the IANA root
+hints** — `. → TLD → the zone` — with recursion disabled on every query and each
+answer taken only from the server authoritative for that step. It never touches
+a recursive resolver or a cache, and in particular never the container's
+`/etc/resolv.conf`: a certifi host inside a split-horizon network would otherwise
+ask an internal recursor, which returns internal-only NS records and an
+internal-only view of the zone, so a record correctly published to the public
+authoritative backend looks "missing" forever and issuance stalls until the
+timeout. No configuration — outbound UDP/53 (with TCP fallback) to the internet
+is the only requirement.
 
 The per-integration **Propagation Delay** is now just a fallback for when that
 check can't run at all (no outbound DNS from the container, or unresolvable NS
