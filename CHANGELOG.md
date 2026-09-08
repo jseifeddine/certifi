@@ -6,6 +6,23 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.1.4] — 2026-09-09
+
+### Fixed
+
+- **DNS propagation checks no longer consult a recursive resolver — least of all the host's
+  own.** The check that waits for the challenge TXT to appear on the zone's authoritative
+  nameservers discovered that delegation through the host's configured resolver
+  (`/etc/resolv.conf`). On a certifi host inside a split-horizon network that resolver is an
+  internal recursor, which hands back internal-only NS records and an internal-only copy of the
+  zone — so a record correctly published to the public authoritative backend looked "missing"
+  on every pass and issuance stalled until the 5-minute timeout. The check now does its own
+  iterative walk from the IANA root hints (`. → TLD → the zone's nameservers`), every query with
+  recursion disabled and every answer taken only from the server authoritative for that step —
+  the same path Let's Encrypt validates from, and one an internal recursor or a poisoned cache
+  can't influence. The final TXT read already queried each authoritative server directly; only
+  the discovery of *which* servers those are was going through the host resolver.
+
 ## [1.1.3] — 2026-09-03
 
 ### Added
