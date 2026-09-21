@@ -173,21 +173,22 @@ pub async fn register_acme(
         .await
         .map_err(crate::error::AppError::Internal)?;
 
-    let now = Utc::now().to_rfc3339();
-    for (key, value) in [
-        (S_ACME_ACCOUNT_KEY, creds.key_pkcs8_b64.clone()),
-        (S_ACME_ACCOUNT_URL, creds.account_url.clone()),
-    ] {
-        sqlx::query(
-            "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
-        )
-        .bind(key)
-        .bind(value)
-        .bind(&now)
-        .execute(&state.db)
-        .await?;
-    }
+    // The key goes wherever the secret backend says; the account URL is not
+    // secret and always stays in `settings`.
+    state
+        .secrets
+        .store_acme_account_key(&state.db, &creds.key_pkcs8_b64)
+        .await
+        .map_err(crate::error::AppError::Internal)?;
+    sqlx::query(
+        "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+    )
+    .bind(S_ACME_ACCOUNT_URL)
+    .bind(&creds.account_url)
+    .bind(Utc::now().to_rfc3339())
+    .execute(&state.db)
+    .await?;
 
     tracing::info!("ACME account registered: {}", creds.account_url);
     audit::log(

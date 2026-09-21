@@ -37,7 +37,7 @@ pub async fn list_domains(
     Query(query): Query<SearchQuery>,
 ) -> Result<Json<Vec<String>>> {
     auth.require(perms::DOMAIN_LIST)?;
-    let provider = integrations::build_provider(&state.db)
+    let provider = integrations::build_provider(&state.db, &state.secrets)
         .await
         .map_err(|e| AppError::BadRequest(format!("DNS integrations not available: {}", e)))?;
 

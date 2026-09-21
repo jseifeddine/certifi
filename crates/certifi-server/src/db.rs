@@ -8,7 +8,11 @@ pub async fn create_pool(db_path: &str) -> anyhow::Result<SqlitePool> {
         .pragma("synchronous", "NORMAL")
         .pragma("foreign_keys", "ON")
         .pragma("temp_store", "MEMORY")
-        .pragma("cache_size", "10000");
+        .pragma("cache_size", "10000")
+        // Zero freed pages instead of just unlinking them. Without this a
+        // deleted certificate's private key stays legible in the file's free
+        // list until something happens to reuse those pages.
+        .pragma("secure_delete", "ON");
 
     let pool = SqlitePoolOptions::new()
         .max_connections(10)
@@ -238,6 +242,9 @@ async fn run_migrations(pool: &SqlitePool) -> anyhow::Result<()> {
         // Optional free-text label so operators can annotate a cert (purpose,
         // owning service, etc.) — shown in the web admin and settable via API/CLI.
         "ALTER TABLE certificates ADD COLUMN description TEXT",
+        // Pointer to this cert's key material in the external secret backend
+        // (`openbao:<path>`). NULL means the PEM columns above hold it.
+        "ALTER TABLE certificates ADD COLUMN secret_ref TEXT",
         // RBAC phase 3: tracks where an assignment came from so OIDC sync can
         // reconcile its own grants without clobbering hand-administered ones.
         // 'manual' (admin assigned) | 'oidc' (synced from a group claim).

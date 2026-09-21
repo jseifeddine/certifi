@@ -146,7 +146,7 @@ pub async fn apply_if_present(state: &AppState) -> Result<bool> {
         applied.oidc_mappings = mappings_n;
     }
     for integ in &doc.integrations {
-        apply_integration(&state.db, integ, &now)
+        apply_integration(state, integ, &now)
             .await
             .with_context(|| format!("provisioning integration '{}'", integ.name))?;
         applied.integrations += 1;
@@ -309,7 +309,7 @@ fn resolve_role_id(name: &str) -> Result<String> {
     Ok(id)
 }
 
-async fn apply_integration(db: &SqlitePool, integ: &IntegrationBlock, now: &str) -> Result<()> {
+async fn apply_integration(state: &AppState, integ: &IntegrationBlock, now: &str) -> Result<()> {
     let kind = integ.kind.trim();
     if kind.is_empty() || integ.name.trim().is_empty() {
         return Err(anyhow!("integration name and kind are required"));
@@ -327,19 +327,28 @@ async fn apply_integration(db: &SqlitePool, integ: &IntegrationBlock, now: &str)
     // handler takes. Catches missing required fields / malformed URLs early.
     build_single_provider(kind, &integ.config).map_err(|e| anyhow!("config rejected: {:#}", e))?;
 
-    let config_json = serde_json::to_string(&integ.config).unwrap_or_else(|_| "{}".into());
+    // Through the secret store, so a provisioned integration lands in the
+    // same place as one created through the API — credentials in OpenBao when
+    // the backend is on, in the column when it isn't.
+    let id = Uuid::new_v4().to_string();
+    let config_value = state
+        .secrets
+        .store_integration_config(&id, &integ.config)
+        .await
+        .context("persisting integration credentials")?;
+
     sqlx::query(
         "INSERT INTO integrations (id, kind, name, config, enabled, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?)",
     )
-    .bind(Uuid::new_v4().to_string())
+    .bind(&id)
     .bind(kind)
     .bind(&integ.name)
-    .bind(&config_json)
+    .bind(&config_value)
     .bind(integ.enabled)
     .bind(now)
     .bind(now)
-    .execute(db)
+    .execute(&state.db)
     .await?;
     Ok(())
 }

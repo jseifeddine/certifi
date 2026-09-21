@@ -15,6 +15,8 @@ use crate::config::Config;
 use crate::events::CertEventSender;
 use crate::handlers::users::hash_password;
 use crate::models::*;
+use crate::services::openbao::BaoConfig;
+use crate::services::secret_store::SecretStore;
 use axum::http::Method;
 use axum::routing::{delete, get, post, put};
 use axum::Router;
@@ -28,6 +30,10 @@ pub struct AppState {
     pub db: SqlitePool,
     pub config: Config,
     pub events: CertEventSender,
+    /// Where certificate keys, the ACME account key and DNS credentials are
+    /// read from and written to. Backed by the database unless `BAO_ADDR` is
+    /// set, in which case it's an OpenBao KV mount.
+    pub secrets: SecretStore,
 }
 
 #[tokio::main]
@@ -53,11 +59,26 @@ async fn main() -> anyhow::Result<()> {
     // Backfill role assignments for any user that pre-dates RBAC.
     rbac::migrate_existing_users(&db).await?;
 
+    // Secret backend. Opt-in: with BAO_ADDR unset this is the database
+    // backend and nothing about Certifi's storage changes. With it set, any
+    // secret still resident in SQLite is swept into OpenBao before the server
+    // starts serving — and a failure here is fatal, because a half-configured
+    // instance would silently write new private keys to disk.
+    let secrets = match BaoConfig::from_env()? {
+        None => SecretStore::database(config.cookie_key.clone()),
+        Some(bao) => {
+            let store = SecretStore::openbao(bao, config.cookie_key.clone()).await?;
+            store.migrate_from_database(&db).await?;
+            store
+        }
+    };
+
     let events = events::channel();
     let state = AppState {
         db: db.clone(),
         config: config.clone(),
         events: events.clone(),
+        secrets: secrets.clone(),
     };
 
     // First-boot IaC provisioning. Reads CERTIFI_PROVISIONING_FILE if set
@@ -75,8 +96,15 @@ async fn main() -> anyhow::Result<()> {
         let db_clone = db.clone();
         let cfg_clone = config.clone();
         let events_clone = events.clone();
+        let secrets_clone = secrets.clone();
         tokio::spawn(async move {
-            services::renewal::run_renewal_scheduler(db_clone, cfg_clone, events_clone).await;
+            services::renewal::run_renewal_scheduler(
+                db_clone,
+                cfg_clone,
+                events_clone,
+                secrets_clone,
+            )
+            .await;
         });
     }
 

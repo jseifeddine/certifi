@@ -53,9 +53,16 @@ pub struct Certificate {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chain_pem: Option<String>,
     /// AES-256-GCM ciphertext of the PFX password. Decrypted on demand by the
-    /// `pem`/`pfx` handlers using the app's `COOKIE_KEY`.
+    /// `pem`/`pfx` handlers using the app's `COOKIE_KEY`. NULL when the
+    /// material lives in the external secret backend — see `secret_ref`.
     #[serde(skip_serializing)]
     pub pfx_password_enc: Option<String>,
+    /// Set when this certificate's key material lives outside the database:
+    /// `openbao:<path>` points at the secret holding every PEM plus the PFX
+    /// password, and the columns above are NULL. Per-row rather than a global
+    /// flag so a half-migrated database still resolves correctly.
+    #[serde(skip_serializing)]
+    pub secret_ref: Option<String>,
     /// Free-text description set by the operator. Not used by issuance logic.
     pub description: Option<String>,
     pub created_at: String,
@@ -66,7 +73,10 @@ pub struct Certificate {
 
 impl From<Certificate> for CertificateView {
     fn from(c: Certificate) -> Self {
-        let has_files = c.fullchain_pem.is_some();
+        // "Has downloadable material" — true whether the PEMs sit in the
+        // column or behind a reference into the secret backend. Checking only
+        // `fullchain_pem` would report every externally-stored cert as empty.
+        let has_files = c.fullchain_pem.is_some() || c.secret_ref.is_some();
         Self {
             has_files,
             auto_renew: c.auto_renew,

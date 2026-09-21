@@ -110,6 +110,28 @@ These env vars override the matching setting in the database AND lock the field 
 
 DNS-integration credentials are configured per integration in the database (see [dns-providers.md](dns-providers.md)). Locking those via env vars is not yet implemented — open an issue if you need it.
 
+### Secret backend — OpenBao (optional)
+
+Leave `BAO_ADDR` unset and all secrets stay in the SQLite database, as they always have. Set it and certificate keys, the ACME account key and DNS integration credentials are written to an OpenBao KV mount instead; existing ones are migrated at the next startup. Full setup, policy and migration notes: [secret-backend.md](secret-backend.md).
+
+Every variable below is also read with a `VAULT_` prefix, so an environment already configured for HashiCorp Vault works unchanged.
+
+| Variable | Default | Description |
+|---|---|---|
+| `BAO_ADDR` | *(disabled)* | OpenBao base URL. Setting it enables the backend. |
+| `BAO_MOUNT` | `secret` | KV mount point |
+| `BAO_PATH` | `certifi` | Path prefix inside the mount |
+| `BAO_KV_VERSION` | `2` | `1` or `2` — must match the mount |
+| `BAO_TOKEN` / `BAO_TOKEN_FILE` | *(none)* | Token auth. Renewed automatically while renewable. |
+| `BAO_ROLE_ID` / `BAO_ROLE_ID_FILE` | *(none)* | AppRole auth — needs `BAO_SECRET_ID` too |
+| `BAO_SECRET_ID` / `BAO_SECRET_ID_FILE` | *(none)* | AppRole secret id |
+| `BAO_APPROLE_PATH` | `approle` | Mount path of the AppRole auth method |
+| `BAO_NAMESPACE` | *(none)* | Sent as `X-Vault-Namespace` |
+| `BAO_CACERT` | *(none)* | PEM CA bundle for a privately-signed OpenBao certificate |
+| `BAO_SKIP_VERIFY` | `false` | Skip TLS verification — test servers only |
+
+If `BAO_ADDR` is set and OpenBao is unreachable or rejects the credentials, the server exits rather than starting up writing keys to disk.
+
 ### SMTP (optional)
 
 Leave `SMTP_HOST` unset to disable all email notifications.

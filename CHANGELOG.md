@@ -6,6 +6,42 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.2.0] — 2026-09-21
+
+### Added
+
+- **Optional OpenBao backend for secret storage** (`BAO_ADDR`). Certificate private keys and
+  chains, the ACME account key and DNS provider credentials are written to an OpenBao KV mount
+  under a configurable path (default `certifi`) instead of the SQLite file, which keeps only
+  non-secret metadata — id, common name, SANs, status, expiry. Listing, RBAC, the renewal
+  scheduler and the web admin are unchanged. Off unless `BAO_ADDR` is set; every `BAO_*`
+  variable is also read as `VAULT_*`, so a Vault-shaped environment needs no new variables.
+  Full setup, policy and migration guide in [`docs/secret-backend.md`](docs/secret-backend.md).
+  - Authenticates by token (`BAO_TOKEN` / `BAO_TOKEN_FILE`, renewed while renewable) or AppRole
+    (`BAO_ROLE_ID` + `BAO_SECRET_ID`, re-logging in before the lease expires). KV v1 and v2,
+    namespaces, a custom CA bundle and a skip-verify escape hatch are all supported.
+  - Existing secrets migrate at the next startup: write, read back, verify every field, then
+    clear the column. Idempotent and interruption-safe — a row already carrying a reference is
+    skipped, and a failed run just leaves work for the next boot. **Back up `DATA_DIR` first;
+    the migration is one-way.**
+  - Each row records where its own material lives (`certificates.secret_ref`, and a reference in
+    place of the value for the ACME key and integration config), so a half-migrated database
+    stays coherent and a cert issued before the switch keeps working until its next renewal.
+  - If `BAO_ADDR` is set and OpenBao is unreachable or rejects the credentials, the server exits
+    instead of quietly falling back to writing private keys to disk.
+  - Deleting a certificate or DNS integration now destroys its material in OpenBao (a KV v2
+    *destroy*, all versions), not just the row pointing at it.
+
+### Security
+
+- **A completed migration no longer leaves the old plaintext recoverable in the database file.**
+  `UPDATE … SET col = NULL` only unlinks the payload — the bytes survive in free pages and WAL
+  frames. After a migration that moved something, Certifi now checkpoints the WAL, runs `VACUUM`
+  to rebuild the file from live rows only, and truncates the WAL again.
+- **SQLite `secure_delete` is now on**, so freed pages are zeroed rather than merely unlinked.
+  Applies to the database backend too: a deleted certificate's private key no longer sits
+  legible in the free list waiting for those pages to be reused.
+
 ## [1.1.4] — 2026-09-09
 
 ### Fixed
@@ -136,7 +172,9 @@ First production release.
   crypto helpers); `rustfmt` + `clippy -D warnings` enforced in CI; and a sidebar footer showing
   the running version linked to its GitHub release alongside a version-pinned Docs link.
 
-[Unreleased]: https://github.com/jseifeddine/certifi/compare/v1.1.3...HEAD
+[Unreleased]: https://github.com/jseifeddine/certifi/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/jseifeddine/certifi/compare/v1.1.4...v1.2.0
+[1.1.4]: https://github.com/jseifeddine/certifi/compare/v1.1.3...v1.1.4
 [1.1.3]: https://github.com/jseifeddine/certifi/compare/v1.1.2...v1.1.3
 [1.1.2]: https://github.com/jseifeddine/certifi/compare/v1.1.1...v1.1.2
 [1.1.1]: https://github.com/jseifeddine/certifi/compare/v1.1.0...v1.1.1

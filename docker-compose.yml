@@ -27,6 +27,14 @@ services:
       # Required in production — generate with: openssl rand -hex 32
       # - JWT_SECRET=your-long-random-secret-here
       # - COOKIE_KEY=your-64-byte-cookie-key-here
+      # Optional: store cert keys, the ACME account key and DNS credentials in
+      # OpenBao instead of the SQLite file. Unset = current behaviour.
+      # See docs/secret-backend.md.
+      # - BAO_ADDR=https://openbao.internal:8200
+      # - BAO_TOKEN=${BAO_TOKEN:-}
+      #   …or AppRole instead of a token:
+      # - BAO_ROLE_ID=${BAO_ROLE_ID:-}
+      # - BAO_SECRET_ID=${BAO_SECRET_ID:-}
       # Optional SMTP for renewal notifications
       # - SMTP_HOST=smtp.example.com
       # - SMTP_PORT=587
