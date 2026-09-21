@@ -208,7 +208,24 @@ impl SecretStore {
         let path = cert_path(cert_id);
         // Carry the existing PFX password over so a renewal doesn't silently
         // invalidate the archive the operator already downloaded.
-        let mut data = client.read(&path).await.unwrap_or(None).unwrap_or_default();
+        //
+        // A failed read here must not fail the renewal — a cert that didn't
+        // get issued is far worse than a PFX password the operator has to
+        // regenerate. But it mustn't pass silently either, because the next
+        // download would hand them a different password with no explanation.
+        let mut data = match client.read(&path).await {
+            Ok(existing) => existing.unwrap_or_default(),
+            Err(e) => {
+                tracing::warn!(
+                    "Could not read the existing secret for certificate {} before re-issuing \
+                     ({:#}); any stored PFX password is being replaced and the next download \
+                     will show a new one",
+                    cert_id,
+                    e
+                );
+                BTreeMap::new()
+            }
+        };
         data.insert(F_FULLCHAIN.into(), issued.fullchain_pem.clone());
         data.insert(F_CERT.into(), issued.cert_pem.clone());
         data.insert(F_CHAIN.into(), issued.chain_pem.clone());
