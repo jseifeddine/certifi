@@ -58,6 +58,11 @@ const DOCS: &[(&str, &str, &str)] = &[
         include_str!("../../../../docs/dns-providers.md"),
     ),
     (
+        "secret-backend",
+        "Secret backend",
+        include_str!("../../../../docs/secret-backend.md"),
+    ),
+    (
         "security",
         "Security",
         include_str!("../../../../docs/security.md"),

@@ -16,6 +16,7 @@ Pick a starting point based on what you're trying to do.
 ## Reference
 
 - **[REST API](api.md)** — Every endpoint, request/response shapes, error codes, the SSE event stream.
+- **[Secret backend](secret-backend.md)** — Optional OpenBao backend: keep certificate keys, the ACME account key and DNS credentials out of the SQLite file. Setup, policy, migrating an existing instance.
 - **[Security](security.md)** — Credential storage, production checklist, TLS termination, CORS, what's not yet implemented.
 
 ## Develop
@@ -29,4 +30,5 @@ Pick a starting point based on what you're trying to do.
 - Want to issue a cert from a cron job on a remote host? Start with [CLI](cli.md).
 - Want to add a new DNS provider? Start with the "Adding a DNS provider" section of [Development](development.md).
 - Confused about the workspace layout? Start with [Architecture](architecture.md).
+- Don't want private keys sitting in the database file? [Secret backend](secret-backend.md).
 - Need to know exactly what a particular endpoint returns? [REST API](api.md).

@@ -2,12 +2,18 @@
 
 ## Credential storage
 
+> Everything in this section describes the default, database-backed storage.
+> Set `BAO_ADDR` and certificate keys, the ACME account key and DNS integration
+> credentials move to an OpenBao KV mount instead — see
+> [secret-backend.md](secret-backend.md). Passwords, API token hashes, TOTP
+> secrets and JWTs are unaffected either way.
+
 - **User passwords** — hashed with Argon2id. The plaintext never touches disk.
 - **API tokens** — stored as SHA-256 hashes only. The full token (`dapi_...`) is returned exactly once at creation and never again. Lose it and you have to issue a new one.
-- **Certificate private keys** — stored in the SQLite DB in PEM format. Restrict filesystem access to the `DATA_DIR` accordingly (`chmod 700` is reasonable).
-- **ACME account private key** — stored in the `settings` table as base64-encoded PKCS#8 DER under `acme_account_key`.
+- **Certificate private keys** — stored in the SQLite DB in PEM format. Restrict filesystem access to the `DATA_DIR` accordingly (`chmod 700` is reasonable). With the OpenBao backend enabled they live in the KV mount and the columns are NULL.
+- **ACME account private key** — stored in the `settings` table as base64-encoded PKCS#8 DER under `acme_account_key`. With the OpenBao backend enabled the setting holds a reference and the key lives in the mount.
 - **PFX passwords** — encrypted with AES-256-GCM keyed off `COOKIE_KEY` before being persisted on the certificate row. Decrypted on demand when the user re-downloads. Rotating `COOKIE_KEY` invalidates stored PFX passwords; the next PFX download generates fresh.
-- **DNS integration credentials** — stored as JSON in the `integrations` table. **Not encrypted at rest** — they're protected by filesystem permissions on `DATA_DIR`, the same as cert private keys. Secret values (`*_token`, `*_key`, `*_pat`) are masked as `***` in API responses; the raw value never leaves the server after creation. Set strict permissions on `DATA_DIR` and treat the volume the same way you'd treat any other secret-bearing data store.
+- **DNS integration credentials** — stored as JSON in the `integrations` table. **Not encrypted at rest** — they're protected by filesystem permissions on `DATA_DIR`, the same as cert private keys. The OpenBao backend moves them out of the database entirely. Secret values (`*_token`, `*_key`, `*_pat`) are masked as `***` in API responses; the raw value never leaves the server after creation. Set strict permissions on `DATA_DIR` and treat the volume the same way you'd treat any other secret-bearing data store.
 - **JWT session tokens** — signed (HS256) with `JWT_SECRET`. 8-hour expiry.
 
 ## Production checklist
@@ -16,6 +22,7 @@
 - [ ] Terminate TLS in front of the `web` service — Certifi itself does not serve HTTPS (see [TLS termination](#tls-termination)).
 - [ ] Keep the `certifi` (backend) service unexposed; route all traffic through the `web` service or your own proxy.
 - [ ] Mount `DATA_DIR` on a volume with restricted permissions (`chmod 700`).
+- [ ] Consider the [OpenBao secret backend](secret-backend.md) if the database volume is backed up, snapshotted, or reachable by anything other than Certifi.
 - [ ] Create named users rather than sharing the `admin` account. Set `email` so each user gets renewal-failure notifications.
 - [ ] Set reasonable expiry dates on API tokens used by automation.
 - [ ] Use Let's Encrypt **production** only after you've tested with staging.
@@ -64,7 +71,7 @@ The default `docker-compose.yml` does NOT expose the Rust backend's port. It's o
 
 ## What's not implemented yet
 
-- **At-rest encryption** for DNS integration credentials and ACME account key (currently filesystem-permission-protected only).
+- **At-rest encryption** for DNS integration credentials and ACME account key *in the database backend* (currently filesystem-permission-protected only). The [OpenBao backend](secret-backend.md) is the answer today; native encryption for the database backend is not implemented.
 - **2FA / TOTP** on user accounts.
 - **WebAuthn / passkey** logins.
 - **OIDC / SSO** federation.

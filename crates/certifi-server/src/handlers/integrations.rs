@@ -49,8 +49,14 @@ impl From<IntegrationMeta> for IntegrationMetaView {
     }
 }
 
-fn row_to_view(row: IntegrationRow, mask_secrets: bool) -> Integration {
-    let mut cfg = row.config_map();
+/// Render a row for the API. `cfg` is the resolved config (from the column
+/// or from the secret backend) — the row's own `config` field may be a
+/// reference and is never surfaced.
+fn row_to_view(
+    row: IntegrationRow,
+    mut cfg: BTreeMap<String, String>,
+    mask_secrets: bool,
+) -> Integration {
     if mask_secrets {
         for (k, v) in cfg.iter_mut() {
             if !v.is_empty() && is_secret_key(&row.kind, k) {
@@ -67,6 +73,17 @@ fn row_to_view(row: IntegrationRow, mask_secrets: bool) -> Integration {
         created_at: row.created_at,
         updated_at: row.updated_at,
     }
+}
+
+/// Resolve a row's credentials and render it masked. Used by every endpoint
+/// that returns an integration.
+async fn masked_view(state: &AppState, row: IntegrationRow) -> Result<Integration> {
+    let cfg = state
+        .secrets
+        .load_integration_config(&row)
+        .await
+        .map_err(AppError::Internal)?;
+    Ok(row_to_view(row, cfg, true))
 }
 
 async fn fetch_row(state: &AppState, id: &str) -> Result<IntegrationRow> {
@@ -96,7 +113,10 @@ pub async fn list(State(state): State<AppState>, auth: AuthUser) -> Result<Json<
         sqlx::query_as("SELECT * FROM integrations ORDER BY created_at ASC")
             .fetch_all(&state.db)
             .await?;
-    let integrations: Vec<Integration> = rows.into_iter().map(|r| row_to_view(r, true)).collect();
+    let mut integrations: Vec<Integration> = Vec::with_capacity(rows.len());
+    for row in rows {
+        integrations.push(masked_view(&state, row).await?);
+    }
     let available_kinds: Vec<IntegrationMetaView> = available_integrations()
         .into_iter()
         .map(Into::into)
@@ -127,7 +147,7 @@ pub async fn get(
 ) -> Result<Json<Integration>> {
     auth.require(perms::INTEGRATION_READ)?;
     let row = fetch_row(&state, &id).await?;
-    Ok(Json(row_to_view(row, true)))
+    Ok(Json(masked_view(&state, row).await?))
 }
 
 #[utoipa::path(
@@ -171,7 +191,12 @@ pub async fn create(
 
     let id = Uuid::new_v4().to_string();
     let now = Utc::now().to_rfc3339();
-    let config_json = serde_json::to_string(&req.config).unwrap_or_else(|_| "{}".into());
+    // Either the JSON blob itself or a reference, depending on the backend.
+    let config_value = state
+        .secrets
+        .store_integration_config(&id, &req.config)
+        .await
+        .map_err(AppError::Internal)?;
 
     sqlx::query(
         "INSERT INTO integrations (id, kind, name, config, enabled, created_at, updated_at)
@@ -180,7 +205,7 @@ pub async fn create(
     .bind(&id)
     .bind(&kind)
     .bind(&name)
-    .bind(&config_json)
+    .bind(&config_value)
     .bind(req.enabled)
     .bind(&now)
     .bind(&now)
@@ -188,7 +213,7 @@ pub async fn create(
     .await?;
 
     let row = fetch_row(&state, &id).await?;
-    let view = row_to_view(row, true);
+    let view = masked_view(&state, row).await?;
     audit::log(
         &state.db,
         &auth,
@@ -230,7 +255,11 @@ pub async fn update(
     auth.require(perms::INTEGRATION_UPDATE)?;
     let row = fetch_row(&state, &id).await?;
 
-    let mut existing_cfg = row.config_map();
+    let mut existing_cfg = state
+        .secrets
+        .load_integration_config(&row)
+        .await
+        .map_err(AppError::Internal)?;
     if let Some(new_cfg) = &req.config {
         // For each key in the incoming config, replace UNLESS the value is the
         // secret sentinel (`***`) — that means "the user didn't change this
@@ -249,11 +278,15 @@ pub async fn update(
     let new_name = req.name.unwrap_or(row.name.clone());
     let new_enabled = req.enabled.unwrap_or(row.enabled);
     let now = Utc::now().to_rfc3339();
-    let config_json = serde_json::to_string(&existing_cfg).unwrap_or_else(|_| "{}".into());
+    let config_value = state
+        .secrets
+        .store_integration_config(&id, &existing_cfg)
+        .await
+        .map_err(AppError::Internal)?;
 
     sqlx::query("UPDATE integrations SET name=?, config=?, enabled=?, updated_at=? WHERE id=?")
         .bind(&new_name)
-        .bind(&config_json)
+        .bind(&config_value)
         .bind(new_enabled)
         .bind(&now)
         .bind(&id)
@@ -261,7 +294,7 @@ pub async fn update(
         .await?;
 
     let row = fetch_row(&state, &id).await?;
-    let view = row_to_view(row, true);
+    let view = masked_view(&state, row).await?;
     audit::log(
         &state.db,
         &auth,
@@ -294,13 +327,23 @@ pub async fn delete(
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
     auth.require(perms::INTEGRATION_DELETE)?;
-    let affected = sqlx::query("DELETE FROM integrations WHERE id = ?")
+    // Fetch first: once the row is gone we no longer know where its
+    // credentials live in the secret backend.
+    let row = fetch_row(&state, &id).await?;
+    sqlx::query("DELETE FROM integrations WHERE id = ?")
         .bind(&id)
         .execute(&state.db)
-        .await?
-        .rows_affected();
-    if affected == 0 {
-        return Err(AppError::NotFound("Integration not found".into()));
+        .await?;
+    // Best-effort: the row is already gone, so failing here would report an
+    // error for a delete that did happen. Log it and let the operator clean
+    // up the orphaned secret.
+    if let Err(e) = state.secrets.delete_integration_config(&row).await {
+        tracing::warn!(
+            "Integration '{}' deleted, but removing its credentials from the secret backend \
+             failed: {:#}",
+            row.name,
+            e
+        );
     }
     audit::log(
         &state.db,
@@ -339,7 +382,11 @@ pub async fn test(
 ) -> Result<Json<IntegrationTestResult>> {
     auth.require(perms::INTEGRATION_TEST)?;
     let row = fetch_row(&state, &id).await?;
-    let cfg = row.config_map();
+    let cfg = state
+        .secrets
+        .load_integration_config(&row)
+        .await
+        .map_err(AppError::Internal)?;
     let provider = build_single_provider(&row.kind, &cfg)
         .map_err(|e| AppError::BadRequest(format_err_chain(&e)))?;
     let zones = provider.list_zones().await.map_err(|e| {

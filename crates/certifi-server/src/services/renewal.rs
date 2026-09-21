@@ -5,18 +5,24 @@ use crate::models::*;
 use crate::services::acme::{AccountCredentials, AcmeClient};
 use crate::services::email::EmailNotifier;
 use crate::services::pfx::parse_cert_expiry;
+use crate::services::secret_store::SecretStore;
 use chrono::Utc;
 use sqlx::SqlitePool;
 use std::collections::HashMap;
 use tokio::time::{sleep, Duration};
 
-pub async fn run_renewal_scheduler(db: SqlitePool, config: Config, events: CertEventSender) {
+pub async fn run_renewal_scheduler(
+    db: SqlitePool,
+    config: Config,
+    events: CertEventSender,
+    secrets: SecretStore,
+) {
     // Brief startup delay so the server is fully initialised
     sleep(Duration::from_secs(30)).await;
 
     loop {
         tracing::info!("Renewal scheduler: checking certificates...");
-        if let Err(e) = check_renewals(&db, &config, &events).await {
+        if let Err(e) = check_renewals(&db, &config, &events, &secrets).await {
             tracing::error!("Renewal scheduler error: {:?}", e);
         }
         sleep(Duration::from_secs(24 * 60 * 60)).await;
@@ -27,6 +33,7 @@ async fn check_renewals(
     db: &SqlitePool,
     config: &Config,
     events: &CertEventSender,
+    secrets: &SecretStore,
 ) -> anyhow::Result<()> {
     let notifier = EmailNotifier::new(config.clone());
     let recipients = fetch_email_recipients(db).await?;
@@ -54,7 +61,7 @@ async fn check_renewals(
             cert.common_name,
             cert.expires_at
         );
-        renew_cert(db, cert, &settings, events, &notifier, &recipients).await;
+        renew_cert(db, cert, &settings, events, secrets, &notifier, &recipients).await;
     }
 
     // Certs whose last attempt failed. Without this pass a single bad run
@@ -79,7 +86,7 @@ async fn check_renewals(
             cert.common_name,
             cert.error.as_deref().unwrap_or("unknown")
         );
-        renew_cert(db, cert, &settings, events, &notifier, &recipients).await;
+        renew_cert(db, cert, &settings, events, secrets, &notifier, &recipients).await;
     }
 
     // Certs with auto_renew=0 that are expiring — just warn
@@ -115,11 +122,13 @@ async fn check_renewals(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn renew_cert(
     db: &SqlitePool,
     cert: &Certificate,
     settings: &HashMap<String, String>,
     events: &CertEventSender,
+    secrets: &SecretStore,
     notifier: &EmailNotifier,
     recipients: &[String],
 ) {
@@ -146,6 +155,7 @@ async fn renew_cert(
         db,
         settings,
         events,
+        secrets,
         &cert_id,
         &cn,
         &sans,
@@ -187,10 +197,12 @@ async fn renew_cert(
 /// `key_algo_override` — per-certificate algorithm preference. When `None`,
 /// falls back to the global `key_algo` setting.  The resolved algorithm is
 /// written to the `key_algo` column so the UI always shows what was actually used.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_issuance(
     db: &SqlitePool,
     settings: &HashMap<String, String>,
     events: &CertEventSender,
+    secrets: &SecretStore,
     cert_id: &str,
     cn: &str,
     sans: &[String],
@@ -225,8 +237,8 @@ pub async fn run_issuance(
         .map(|s| s.as_str())
         .unwrap_or(ACME_LE_PROD);
 
-    let acme = build_acme_client(settings, ca_url, db).await?;
-    let provider = integrations::build_provider(db).await?;
+    let acme = build_acme_client(settings, ca_url, db, secrets).await?;
+    let provider = integrations::build_provider(db, secrets).await?;
     if provider.is_empty() {
         anyhow::bail!("No DNS integrations configured");
     }
@@ -235,18 +247,18 @@ pub async fn run_issuance(
         .await?;
 
     let expires_at = parse_cert_expiry(&issued.cert_pem).unwrap_or_default();
-    let now = Utc::now().to_rfc3339();
 
+    // Key material first — it's the part that can fail against an external
+    // backend, and a cert marked `active` whose private key never landed
+    // anywhere would be worse than one left `issuing` for the retry sweep.
+    secrets.store_issued_cert(db, cert_id, &issued).await?;
+
+    let now = Utc::now().to_rfc3339();
     sqlx::query(
         "UPDATE certificates
-         SET status='active', fullchain_pem=?, cert_pem=?, chain_pem=?,
-             privkey_pem=?, expires_at=?, error=NULL, updated_at=?
+         SET status='active', expires_at=?, error=NULL, updated_at=?
          WHERE id=?",
     )
-    .bind(&issued.fullchain_pem)
-    .bind(&issued.cert_pem)
-    .bind(&issued.chain_pem)
-    .bind(&issued.privkey_pem)
     .bind(&expires_at)
     .bind(&now)
     .bind(cert_id)
@@ -267,8 +279,13 @@ async fn build_acme_client(
     settings: &HashMap<String, String>,
     ca_url: &str,
     db: &SqlitePool,
+    secrets: &SecretStore,
 ) -> anyhow::Result<AcmeClient> {
-    let key_b64 = settings.get(S_ACME_ACCOUNT_KEY).cloned();
+    // The settings value may be the key itself or a reference into the
+    // secret backend; the store knows which and resolves it either way.
+    let key_b64 = secrets
+        .load_acme_account_key(settings.get(S_ACME_ACCOUNT_KEY).map(String::as_str))
+        .await?;
     let account_url = settings
         .get(S_ACME_ACCOUNT_URL)
         .cloned()
@@ -287,21 +304,18 @@ async fn build_acme_client(
     tracing::info!("No ACME account found, registering with {}", ca_url);
     let (client, creds) = AcmeClient::register(ca_url).await?;
 
-    let now = Utc::now().to_rfc3339();
-    for (key, value) in [
-        (S_ACME_ACCOUNT_KEY, creds.key_pkcs8_b64.as_str()),
-        (S_ACME_ACCOUNT_URL, creds.account_url.as_str()),
-    ] {
-        sqlx::query(
-            "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
-             ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
-        )
-        .bind(key)
-        .bind(value)
-        .bind(&now)
-        .execute(db)
+    secrets
+        .store_acme_account_key(db, &creds.key_pkcs8_b64)
         .await?;
-    }
+    sqlx::query(
+        "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
+         ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+    )
+    .bind(S_ACME_ACCOUNT_URL)
+    .bind(&creds.account_url)
+    .bind(Utc::now().to_rfc3339())
+    .execute(db)
+    .await?;
 
     Ok(client)
 }

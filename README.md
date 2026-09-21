@@ -52,6 +52,7 @@ Full docs live in [`docs/`](docs/README.md):
 | **[Certificates](docs/certificates.md)** | Issuing, renewing, downloading, the idempotent model |
 | **[CLI](docs/cli.md)** | `certifi-cli` for cron-driven automation |
 | **[API reference](docs/api.md)** | REST endpoints and the SSE event stream |
+| **[Secret backend](docs/secret-backend.md)** | Optional OpenBao storage for keys and credentials |
 | **[Security](docs/security.md)** | Credential storage, production checklist |
 | **[Development](docs/development.md)** | Building from source, adding a DNS provider |
 

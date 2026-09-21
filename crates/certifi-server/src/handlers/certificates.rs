@@ -7,7 +7,7 @@ use crate::models::*;
 use crate::rbac::perms;
 use crate::services::pfx::{build_pfx, generate_pfx_password};
 use crate::services::renewal::run_issuance;
-use crate::services::secret;
+use crate::services::secret_store::CertMaterial;
 use crate::AppState;
 use axum::extract::{Path, State};
 use axum::http::{header, StatusCode};
@@ -266,7 +266,7 @@ pub async fn create(
     // and the caller would only learn about it through a `failed` status
     // minutes later. Cheaper to do one list_zones() call up-front (unioned
     // across all enabled integrations).
-    let provider = integrations::build_provider(&state.db)
+    let provider = integrations::build_provider(&state.db, &state.secrets)
         .await
         .map_err(|e| AppError::BadRequest(format!("DNS integrations not available: {}", e)))?;
     if provider.is_empty() {
@@ -636,6 +636,17 @@ pub async fn delete(
     if affected == 0 {
         return Err(AppError::NotFound("Certificate not found".into()));
     }
+    // Destroy the key material too — "delete this certificate" has to mean
+    // the private key is gone, not just the row pointing at it. Best-effort:
+    // the row is already deleted, so a failure here is an orphaned secret to
+    // log, not an error to report for a delete that did happen.
+    if let Err(e) = state.secrets.delete_cert_material(&existing).await {
+        tracing::warn!(
+            "Certificate {} deleted, but destroying its key material failed: {:#}",
+            existing.common_name,
+            e
+        );
+    }
     emit(&state.events, CertEvent::deleted(&id));
     audit::log(
         &state.db,
@@ -676,7 +687,8 @@ pub async fn download_fullchain(
 ) -> Result<Response> {
     let c = fetch_cert(&s, &id).await?;
     a.require_for_domains(perms::CERTIFICATE_DOWNLOAD, &cert_domains(&c))?;
-    let pem = c
+    let pem = load_material(&s, &c)
+        .await?
         .fullchain_pem
         .ok_or_else(|| AppError::NotFound("Not available yet".into()))?;
     Ok(pem_dl(pem, &format!("{}-fullchain.pem", c.common_name)))
@@ -703,7 +715,8 @@ pub async fn download_privkey(
 ) -> Result<Response> {
     let c = fetch_cert(&s, &id).await?;
     a.require_for_domains(perms::CERTIFICATE_DOWNLOAD, &cert_domains(&c))?;
-    let pem = c
+    let pem = load_material(&s, &c)
+        .await?
         .privkey_pem
         .ok_or_else(|| AppError::NotFound("Not available yet".into()))?;
     Ok(pem_dl(pem, &format!("{}-privkey.pem", c.common_name)))
@@ -730,7 +743,8 @@ pub async fn download_cert(
 ) -> Result<Response> {
     let c = fetch_cert(&s, &id).await?;
     a.require_for_domains(perms::CERTIFICATE_DOWNLOAD, &cert_domains(&c))?;
-    let pem = c
+    let pem = load_material(&s, &c)
+        .await?
         .cert_pem
         .ok_or_else(|| AppError::NotFound("Not available yet".into()))?;
     Ok(pem_dl(pem, &format!("{}-cert.pem", c.common_name)))
@@ -758,7 +772,8 @@ pub async fn download_chain(
 ) -> Result<Response> {
     let c = fetch_cert(&s, &id).await?;
     a.require_for_domains(perms::CERTIFICATE_DOWNLOAD, &cert_domains(&c))?;
-    let pem = c
+    let pem = load_material(&s, &c)
+        .await?
         .chain_pem
         .ok_or_else(|| AppError::NotFound("Not available yet".into()))?;
     Ok(pem_dl(pem, &format!("{}-chain.pem", c.common_name)))
@@ -788,32 +803,22 @@ pub async fn download_pfx(
 ) -> Result<Json<PfxResponse>> {
     let cert = fetch_cert(&state, &id).await?;
     auth.require_for_domains(perms::CERTIFICATE_DOWNLOAD, &cert_domains(&cert))?;
-    let fullchain = cert
+    let material = load_material(&state, &cert).await?;
+    let fullchain = material
         .fullchain_pem
-        .clone()
         .ok_or_else(|| AppError::NotFound("Not available yet".into()))?;
-    let privkey = cert
+    let privkey = material
         .privkey_pem
-        .clone()
         .ok_or_else(|| AppError::NotFound("Not available yet".into()))?;
 
-    // Reuse the previously-stored password if we can decrypt it; otherwise
-    // mint a fresh one and persist (encrypted). This way the user can come
-    // back later, see the same password in the UI, and the on-disk PFX they
-    // already saved keeps working.
-    let password = match cert.pfx_password_enc.as_deref() {
-        Some(enc) => match secret::decrypt(enc, &state.config.cookie_key) {
-            Ok(pw) => pw,
-            Err(e) => {
-                tracing::warn!(
-                    "PFX password decrypt failed for cert {} ({}); rotating",
-                    id,
-                    e
-                );
-                rotate_pfx_password(&state, &id).await?
-            }
-        },
-        None => rotate_pfx_password(&state, &id).await?,
+    // Reuse the previously-stored password if there is one. This way the user
+    // can come back later, see the same password in the UI, and the PFX they
+    // already saved keeps working. `None` also covers a failed decrypt on the
+    // database backend (COOKIE_KEY rotated) — minting a fresh one is the
+    // right recovery either way.
+    let password = match material.pfx_password {
+        Some(pw) => pw,
+        None => rotate_pfx_password(&state, &cert).await?,
     };
 
     let pfx_bytes = build_pfx(&fullchain, &privkey, &password, &cert.common_name)?;
@@ -826,18 +831,15 @@ pub async fn download_pfx(
     }))
 }
 
-/// Generate a fresh PFX password, encrypt it with the cookie key, and persist
-/// it on the certificate row. Returns the plaintext password.
-async fn rotate_pfx_password(state: &AppState, id: &str) -> Result<String> {
+/// Generate a fresh PFX password and persist it wherever this cert's material
+/// lives. Returns the plaintext password.
+async fn rotate_pfx_password(state: &AppState, cert: &Certificate) -> Result<String> {
     let password = generate_pfx_password();
-    let enc = secret::encrypt(&password, &state.config.cookie_key).map_err(AppError::Internal)?;
-    let now = Utc::now().to_rfc3339();
-    sqlx::query("UPDATE certificates SET pfx_password_enc = ?, updated_at = ? WHERE id = ?")
-        .bind(&enc)
-        .bind(&now)
-        .bind(id)
-        .execute(&state.db)
-        .await?;
+    state
+        .secrets
+        .store_pfx_password(&state.db, cert, &password)
+        .await
+        .map_err(AppError::Internal)?;
     Ok(password)
 }
 
@@ -865,21 +867,27 @@ pub async fn pem_bundle(
 ) -> Result<Json<PemBundle>> {
     let cert = fetch_cert(&state, &id).await?;
     auth.require_for_domains(perms::CERTIFICATE_DOWNLOAD, &cert_domains(&cert))?;
-    let pfx_password = cert
-        .pfx_password_enc
-        .as_deref()
-        .and_then(|enc| secret::decrypt(enc, &state.config.cookie_key).ok());
+    let material = load_material(&state, &cert).await?;
 
     Ok(Json(PemBundle {
-        fullchain_pem: cert.fullchain_pem,
-        cert_pem: cert.cert_pem,
-        chain_pem: cert.chain_pem,
-        privkey_pem: cert.privkey_pem,
-        pfx_password,
+        fullchain_pem: material.fullchain_pem,
+        cert_pem: material.cert_pem,
+        chain_pem: material.chain_pem,
+        privkey_pem: material.privkey_pem,
+        pfx_password: material.pfx_password,
     }))
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Resolve a cert's PEMs and PFX password from whichever backend holds them.
+async fn load_material(state: &AppState, cert: &Certificate) -> Result<CertMaterial> {
+    state
+        .secrets
+        .load_cert_material(cert)
+        .await
+        .map_err(AppError::Internal)
+}
 
 async fn fetch_cert(state: &AppState, id: &str) -> Result<Certificate> {
     sqlx::query_as::<_, Certificate>("SELECT * FROM certificates WHERE id = ?")
@@ -977,6 +985,7 @@ fn spawn_issuance(
     let db = state.db.clone();
     let config = state.config.clone();
     let events = state.events.clone();
+    let secrets = state.secrets.clone();
     let id = id.to_string();
     let cn = cn.to_string();
     let sans = sans.to_vec();
@@ -998,6 +1007,7 @@ fn spawn_issuance(
             &db,
             &settings,
             &events,
+            &secrets,
             &id,
             &cn,
             &sans,

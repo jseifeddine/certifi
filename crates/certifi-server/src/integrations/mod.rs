@@ -5,6 +5,7 @@
 //! the `integrations` table at issuance time, so adding/removing an
 //! integration takes effect on the next request — no restart required.
 
+use crate::services::secret_store::SecretStore;
 use anyhow::Result;
 use sqlx::SqlitePool;
 use std::collections::BTreeMap;
@@ -65,6 +66,12 @@ pub struct IntegrationRow {
 
 impl IntegrationRow {
     /// Decode the per-integration config blob into a flat key/value map.
+    ///
+    /// Only valid when the credentials are actually in the column. When the
+    /// external secret backend holds them, `config` is a reference and this
+    /// returns an empty map — go through
+    /// [`SecretStore::load_integration_config`](crate::services::secret_store::SecretStore::load_integration_config)
+    /// instead, which handles both cases.
     pub fn config_map(&self) -> BTreeMap<String, String> {
         serde_json::from_str(&self.config).unwrap_or_default()
     }
@@ -184,7 +191,7 @@ impl DnsProvider for MultiDnsProvider {
 }
 
 /// Build the aggregated provider from every enabled integration in the DB.
-pub async fn build_provider(db: &SqlitePool) -> Result<MultiDnsProvider> {
+pub async fn build_provider(db: &SqlitePool, secrets: &SecretStore) -> Result<MultiDnsProvider> {
     let rows: Vec<IntegrationRow> = sqlx::query_as::<_, IntegrationRow>(
         "SELECT * FROM integrations WHERE enabled = 1 ORDER BY created_at ASC",
     )
@@ -193,12 +200,24 @@ pub async fn build_provider(db: &SqlitePool) -> Result<MultiDnsProvider> {
 
     let mut providers: Vec<(String, Box<dyn DnsProvider>)> = Vec::with_capacity(rows.len());
     for row in rows {
-        let cfg = row.config_map();
+        // Don't fail the whole build for one bad row — log and skip so other
+        // integrations can still serve traffic. That covers an unreachable
+        // secret backend for this row as well as a malformed config.
+        let cfg = match secrets.load_integration_config(&row).await {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(
+                    "Integration '{}' ({}): credentials unavailable, skipping: {:#}",
+                    row.name,
+                    row.kind,
+                    e
+                );
+                continue;
+            }
+        };
         match build_single_provider(&row.kind, &cfg) {
             Ok(p) => providers.push((row.name, p)),
             Err(e) => {
-                // Don't fail the whole build for one bad row — log and skip
-                // so other integrations can still serve traffic.
                 tracing::warn!(
                     "Integration '{}' ({}): build failed, skipping: {}",
                     row.name,
