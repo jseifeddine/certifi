@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Outlet } from 'react-router-dom';
 import { useAuth } from '../auth';
 import { integrationsApi, SECRET_MASK } from '../api/integrations';
+import { useKeyAlgorithms } from '../api/keyAlgorithms';
 import { settingsApi } from '../api/settings';
 import { usersApi } from '../api/users';
 import { useConfirm } from '../components/ConfirmDialog';
@@ -75,6 +76,7 @@ function AcmeTab({ settings, onReload }: { settings: SettingsType; onReload: () 
   const acmeCaLocked = locked.includes('acme_ca');
   const [acmeCa, setAcmeCa] = useState(settings.acme_ca);
   const [keyAlgo, setKeyAlgo] = useState(settings.key_algo);
+  const keyAlgos = useKeyAlgorithms();
   const [msg, setMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
   const [registering, setRegistering] = useState(false);
 
@@ -155,9 +157,13 @@ function AcmeTab({ settings, onReload }: { settings: SettingsType; onReload: () 
       <div className="mb-4">
         <label className="block text-[13px] font-medium text-muted mb-1.5">Key Algorithm</label>
         <select value={keyAlgo} onChange={(e) => setKeyAlgo(e.target.value)} autoComplete="off">
-          <option value="ec-p384">ECDSA P-384 (recommended)</option>
-          <option value="ec-p256">ECDSA P-256</option>
+          {(keyAlgos?.algorithms ?? [{ id: settings.key_algo, label: settings.key_algo }]).map((a) => (
+            <option key={a.id} value={a.id}>{a.label}</option>
+          ))}
         </select>
+        <div className="text-[11px] text-dim mt-1">
+          Applies to new certificates only. Existing ones keep their algorithm; change it from the certificate's page.
+        </div>
       </div>
 
       <button className="btn btn-primary" onClick={save}>Save Settings</button>

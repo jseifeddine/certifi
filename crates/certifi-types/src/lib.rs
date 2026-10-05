@@ -16,6 +16,7 @@ pub struct IssueCertRequest {
     #[serde(default)]
     pub auto_renew: Option<bool>,
     #[serde(default)]
+    #[schema(value_type = Option<KeyAlgo>)]
     pub key_algo: Option<String>,
     /// Optional free-text label. Ignored on dedup hits (including a retry of a
     /// failed cert) — the existing cert's description is preserved.
@@ -35,6 +36,7 @@ pub struct IssueCertResponse {
     pub common_name: String,
     pub sans: Vec<String>,
     pub auto_renew: bool,
+    #[schema(value_type = Option<KeyAlgo>)]
     pub key_algo: Option<String>,
     pub description: Option<String>,
     /// True when the server returned an existing cert instead of issuing a new
@@ -51,6 +53,7 @@ pub struct CertificateView {
     pub sans: Vec<String>,
     pub status: String,
     pub auto_renew: bool,
+    #[schema(value_type = Option<KeyAlgo>)]
     pub key_algo: Option<String>,
     pub description: Option<String>,
     pub created_at: String,
@@ -58,6 +61,102 @@ pub struct CertificateView {
     pub expires_at: Option<String>,
     pub error: Option<String>,
     pub has_files: bool,
+}
+
+/// A private-key algorithm certifi can issue with. The single list every
+/// other place reads: server-side validation, `GET /api/key-algorithms`, the
+/// OpenAPI enum and the client's `--key-algo` checks.
+///
+/// Wire fields stay `String` (annotated with this schema) so an unknown value
+/// still reaches the handler and gets a precise 400 instead of a generic
+/// JSON-extractor rejection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub enum KeyAlgo {
+    #[serde(rename = "ec-p256")]
+    EcP256,
+    #[serde(rename = "ec-p384")]
+    EcP384,
+    #[serde(rename = "rsa-2048")]
+    Rsa2048,
+    #[serde(rename = "rsa-4096")]
+    Rsa4096,
+}
+
+impl KeyAlgo {
+    /// Every supported algorithm, in the order clients should list them.
+    pub const ALL: &'static [KeyAlgo] = &[
+        KeyAlgo::EcP256,
+        KeyAlgo::EcP384,
+        KeyAlgo::Rsa2048,
+        KeyAlgo::Rsa4096,
+    ];
+
+    /// Used when neither the request nor the global setting names one.
+    pub const DEFAULT: KeyAlgo = KeyAlgo::EcP384;
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            KeyAlgo::EcP256 => "ec-p256",
+            KeyAlgo::EcP384 => "ec-p384",
+            KeyAlgo::Rsa2048 => "rsa-2048",
+            KeyAlgo::Rsa4096 => "rsa-4096",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            KeyAlgo::EcP256 => "ECDSA P-256",
+            KeyAlgo::EcP384 => "ECDSA P-384",
+            KeyAlgo::Rsa2048 => "RSA 2048",
+            KeyAlgo::Rsa4096 => "RSA 4096",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<KeyAlgo> {
+        KeyAlgo::ALL.iter().copied().find(|a| a.as_str() == s)
+    }
+
+    /// Comma-separated ids, for error messages.
+    pub fn valid_list() -> String {
+        KeyAlgo::ALL
+            .iter()
+            .map(|a| a.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+/// POST /api/certificates/:id/renew request body. The body itself is
+/// optional; an empty body or `{}` renews with the current algorithm.
+/// Unknown fields are rejected so a typo can't silently renew with the old key.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RenewCertRequest {
+    /// Re-issue with this algorithm and keep it for later renewals.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<KeyAlgo>)]
+    pub key_algo: Option<String>,
+}
+
+/// One entry of `GET /api/key-algorithms`.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct KeyAlgorithmInfo {
+    #[schema(value_type = KeyAlgo)]
+    pub id: String,
+    pub label: String,
+}
+
+/// GET /api/key-algorithms response.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct KeyAlgorithmsResponse {
+    /// What a create request without `key_algo` gets: the global setting,
+    /// else the built-in default.
+    #[schema(value_type = KeyAlgo)]
+    pub default: String,
+    /// True when `POST /api/certificates/:id/renew` honours `key_algo`.
+    /// Servers before v1.3.0 have no such endpoint and answer 404.
+    pub rekey: bool,
+    pub algorithms: Vec<KeyAlgorithmInfo>,
 }
 
 /// GET /api/health response.
@@ -143,6 +242,26 @@ pub fn normalize_request(cn: &str, sans: &[String]) -> (String, Vec<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn key_algo_ids_round_trip_through_serde_and_parse() {
+        for a in KeyAlgo::ALL {
+            let wire = serde_json::to_string(a).unwrap();
+            assert_eq!(wire, format!("\"{}\"", a.as_str()));
+            assert_eq!(KeyAlgo::parse(a.as_str()), Some(*a));
+        }
+        assert_eq!(KeyAlgo::parse("ec-p521"), None);
+        assert_eq!(KeyAlgo::parse("EC-P256"), None);
+    }
+
+    #[test]
+    fn renew_request_rejects_unknown_fields() {
+        let ok: RenewCertRequest = serde_json::from_str(r#"{"key_algo":"ec-p256"}"#).unwrap();
+        assert_eq!(ok.key_algo.as_deref(), Some("ec-p256"));
+        let empty: RenewCertRequest = serde_json::from_str("{}").unwrap();
+        assert!(empty.key_algo.is_none());
+        assert!(serde_json::from_str::<RenewCertRequest>(r#"{"keyalgo":"ec-p256"}"#).is_err());
+    }
 
     #[test]
     fn normalize_host_lowercases_trims_and_strips_trailing_dot() {

@@ -9,7 +9,8 @@ use std::time::Duration;
 
 use certifi_types::{
     CertificateView, CreateIntegrationRequest, Integration, IntegrationTestResult,
-    IssueCertRequest, IssueCertResponse, UpdateIntegrationRequest,
+    IssueCertRequest, IssueCertResponse, KeyAlgorithmsResponse, RenewCertRequest,
+    UpdateIntegrationRequest,
 };
 use reqwest::{header, StatusCode};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -240,6 +241,36 @@ impl Client {
         .await
     }
 
+    /// Renew, optionally re-issuing with a different key algorithm. The server
+    /// stores `key_algo` and later renewals keep it. Servers before v1.3.0
+    /// ignore the body, so check [`Client::key_algorithms`]`.rekey` first.
+    pub async fn renew_certificate_with(
+        &self,
+        id: &str,
+        key_algo: Option<&str>,
+    ) -> Result<IssueCertResponse> {
+        let body = RenewCertRequest {
+            key_algo: key_algo.map(str::to_string),
+        };
+        self.json_request(
+            reqwest::Method::POST,
+            &format!("certificates/{}/renew", id),
+            Some(&body),
+        )
+        .await
+    }
+
+    /// Supported key algorithms, the server's default, and whether `renew`
+    /// accepts `key_algo`. Servers before v1.3.0 answer 404.
+    pub async fn key_algorithms(&self) -> Result<KeyAlgorithmsResponse> {
+        self.json_request(
+            reqwest::Method::GET,
+            "key-algorithms",
+            None::<&serde_json::Value>,
+        )
+        .await
+    }
+
     pub async fn delete_certificate(&self, id: &str) -> Result<()> {
         let _: serde_json::Value = self
             .json_request(
@@ -404,6 +435,19 @@ mod tests {
 
     fn client(base: &str) -> Result<Client> {
         Client::new(base, Auth::Token("dapi_test".to_string()))
+    }
+
+    #[test]
+    fn renew_body_omits_key_algo_when_not_changing_it() {
+        let plain = RenewCertRequest { key_algo: None };
+        assert_eq!(serde_json::to_string(&plain).unwrap(), "{}");
+        let rekey = RenewCertRequest {
+            key_algo: Some("ec-p256".into()),
+        };
+        assert_eq!(
+            serde_json::to_string(&rekey).unwrap(),
+            r#"{"key_algo":"ec-p256"}"#
+        );
     }
 
     #[test]

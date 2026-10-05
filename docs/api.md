@@ -75,7 +75,7 @@ Request a certificate. **Idempotent** on the normalized `(common_name, sorted SA
 | `common_name` | string | yes | Primary domain (CN) |
 | `sans` | string[] | no | Additional domains. Don't repeat `common_name`; if you do it's deduped. |
 | `auto_renew` | bool | no | Default `true`. Ignored on dedup hits — existing setting is preserved. |
-| `key_algo` | string | no | One of `ec-p256`, `ec-p384`, `rsa-2048`, `rsa-4096`. Defaults to the per-instance setting. Ignored on dedup hits. |
+| `key_algo` | string | no | One of `ec-p256`, `ec-p384`, `rsa-2048`, `rsa-4096`. Defaults to the per-instance setting (see `GET /api/key-algorithms`). Ignored on dedup hits; to change an existing cert's algorithm, use `renew` with a `key_algo` body. |
 | `description` | string | no | Free-text label. Ignored on dedup hits. |
 
 **Response (new issuance) `202`:**
@@ -107,7 +107,39 @@ Delete a cert and all key/cert material. **Response `200`:** `{"ok": true}`. **E
 
 ### `POST /api/certificates/:id/renew`
 
-Force an immediate renewal regardless of expiry. **Response `202`:** same shape as the create response with `deduplicated: false`. **Errors:** `404`, `409` (already in flight).
+Force an immediate renewal regardless of expiry. Requires `certificate.renew` on every domain of the cert. **Response `202`:** same shape as the create response with `deduplicated: false`; `key_algo` is the algorithm being issued. **Errors:** `400` (bad body, see below), `404`, `409` (already in flight).
+
+The body is optional. With no body, or `{}`, the cert is renewed with its current key algorithm. To re-issue with a different one:
+
+```json
+{ "key_algo": "ec-p256" }
+```
+
+The new algorithm is stored on the cert, and later automatic renewals keep it. The audit entry (`certificate.renew`) records the old and new algorithm as `before.key_algo` / `after.key_algo`. A body that is not valid JSON, has unknown fields, or names an unsupported algorithm is rejected with `400` and nothing changes. The current cert and key keep being served until the new one is issued; if issuance fails, the cert goes to `failed` with the new algorithm stored, and the next retry uses it.
+
+Re-keying generates a new private key, so anything pinned to the old public key (key pins, DANE `3 1 1` TLSA records) has to be updated.
+
+Servers before v1.3.0 ignore this body and re-issue with the old algorithm. Check `rekey` in [`GET /api/key-algorithms`](#get-apikey-algorithms) first; older servers answer that with `404`.
+
+### `GET /api/key-algorithms`
+
+The supported key algorithms and the effective default. Any authenticated user or token can call it.
+
+**Response `200`:**
+```json
+{
+  "default": "ec-p384",
+  "rekey": true,
+  "algorithms": [
+    {"id": "ec-p256",  "label": "ECDSA P-256"},
+    {"id": "ec-p384",  "label": "ECDSA P-384"},
+    {"id": "rsa-2048", "label": "RSA 2048"},
+    {"id": "rsa-4096", "label": "RSA 4096"}
+  ]
+}
+```
+
+`default` is what a create request without `key_algo` gets: the global `key_algo` setting, else `ec-p384`. `rekey` is `true` when `renew` accepts `key_algo`. In the OpenAPI spec every `key_algo` field is the `KeyAlgo` enum.
 
 ### `PUT /api/certificates/:id/auto-renew`
 
@@ -400,7 +432,9 @@ Admins can change anyone's password; non-admins can only change their own.
 
 ### `PUT /api/settings`
 
-Update one or more settings. Any field can be omitted. **Response `200`:** `{"ok": true}`. **Errors:** `400` if you try to update a locked setting.
+Update one or more settings. Any field can be omitted. **Response `200`:** `{"ok": true}`. **Errors:** `400` if you try to update a locked setting, or if `key_algo` is not a supported algorithm.
+
+Changing `key_algo` only affects certificates created afterwards. Every cert stores the algorithm it was first issued with and renews with it; to move an existing cert, re-issue it with [`POST /api/certificates/:id/renew`](#post-apicertificatesidrenew) and a `key_algo` body.
 
 ### `POST /api/settings/acme/register`
 

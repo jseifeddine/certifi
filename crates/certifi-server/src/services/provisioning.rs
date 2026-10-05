@@ -210,6 +210,7 @@ async fn apply_acme(db: &SqlitePool, acme: &AcmeBlock, now: &str) -> Result<usiz
         n += 1;
     }
     if let Some(algo) = &acme.key_algo {
+        validate_key_algo(algo).map_err(|e| anyhow!("acme.key_algo: {}", e))?;
         upsert_setting(db, S_KEY_ALGO, algo, now).await?;
         n += 1;
     }

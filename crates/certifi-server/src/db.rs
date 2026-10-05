@@ -23,7 +23,7 @@ pub async fn create_pool(db_path: &str) -> anyhow::Result<SqlitePool> {
     Ok(pool)
 }
 
-async fn run_migrations(pool: &SqlitePool) -> anyhow::Result<()> {
+pub(crate) async fn run_migrations(pool: &SqlitePool) -> anyhow::Result<()> {
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS users (

@@ -126,6 +126,15 @@ export interface IntegrationMeta {
   fields: IntegrationField[];
 }
 
+/** Response of GET /api/key-algorithms. */
+export interface KeyAlgorithms {
+  /** What a create request without `key_algo` gets. */
+  default: string;
+  /** True when renew accepts `key_algo`. */
+  rekey: boolean;
+  algorithms: { id: string; label: string }[];
+}
+
 export interface Settings {
   acme_ca: string;
   acme_registered: boolean;

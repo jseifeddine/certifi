@@ -2,6 +2,7 @@ import { useEffect, useState, type FormEvent, type KeyboardEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { certsApi } from '../api/certificates';
 import { domainsApi } from '../api/domains';
+import { keyAlgoLabel, useKeyAlgorithms } from '../api/keyAlgorithms';
 import { ScrollText } from 'lucide-react';
 const IconCert = (p: React.SVGProps<SVGSVGElement>) => <ScrollText className="h-4 w-4" {...p} />;
 import { usePageTitle } from '../components/Layout';
@@ -114,6 +115,7 @@ export function CertificateNew() {
   const [sanInput, setSanInput] = useState('');
   const [autoRenew, setAutoRenew] = useState(true);
   const [keyAlgo, setKeyAlgo] = useState('');
+  const keyAlgos = useKeyAlgorithms();
   const [description, setDescription] = useState('');
   const [domains, setDomains] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -246,11 +248,12 @@ export function CertificateNew() {
           <div className="mb-4">
             <label className="block text-[13px] font-medium text-muted mb-1.5">Key Algorithm</label>
             <select value={keyAlgo} onChange={(e) => setKeyAlgo(e.target.value)} autoComplete="off">
-              <option value="">Use global default</option>
-              <option value="ec-p384">ECDSA P-384 (recommended)</option>
-              <option value="ec-p256">ECDSA P-256</option>
-              <option value="rsa-2048">RSA 2048-bit (legacy)</option>
-              <option value="rsa-4096">RSA 4096-bit (legacy)</option>
+              <option value="">
+                Use global default{keyAlgos ? ` (${keyAlgoLabel(keyAlgos, keyAlgos.default)})` : ''}
+              </option>
+              {keyAlgos?.algorithms.map((a) => (
+                <option key={a.id} value={a.id}>{a.label}</option>
+              ))}
             </select>
             <div className="text-[11px] text-dim mt-1">Override the global key algorithm for this certificate only</div>
           </div>
