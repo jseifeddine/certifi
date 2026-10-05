@@ -145,6 +145,13 @@ mod tests {
     }
 
     #[test]
+    fn key_algorithm_is_not_treated_as_a_secret() {
+        // A re-key is audited as before/after `key_algo`; it must stay legible.
+        let out = redact(json!({ "key_algo": "ec-p256" }));
+        assert_eq!(out["key_algo"], "ec-p256");
+    }
+
+    #[test]
     fn secret_key_matching_is_case_insensitive() {
         let out = redact(json!({ "Cookie_Secret": "v", "PASSWORD": "v" }));
         assert_eq!(out["Cookie_Secret"], REDACTED);

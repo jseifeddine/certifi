@@ -11,7 +11,12 @@ export const certsApi = {
   list: () => api.get<Certificate[]>('/api/certificates'),
   get: (id: string) => api.get<Certificate>(`/api/certificates/${id}`),
   create: (req: CreateCertRequest) => api.post<CreateCertResponse>('/api/certificates', req),
-  renew: (id: string) => api.post<CreateCertResponse>(`/api/certificates/${id}/renew`),
+  /** Pass `keyAlgo` to re-issue with a different algorithm; the server keeps it. */
+  renew: (id: string, keyAlgo?: string) =>
+    api.post<CreateCertResponse>(
+      `/api/certificates/${id}/renew`,
+      keyAlgo ? { key_algo: keyAlgo } : undefined,
+    ),
   delete: (id: string) => api.delete<{ ok: true }>(`/api/certificates/${id}`),
   setAutoRenew: (id: string, autoRenew: boolean) =>
     api.put<{ ok: true }>(`/api/certificates/${id}/auto-renew`, { auto_renew: autoRenew }),

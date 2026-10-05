@@ -170,6 +170,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/certificates/:id/download/pfx", post(handlers::certificates::download_pfx))
         .route("/api/certificates/:id/pem", get(handlers::certificates::pem_bundle))
         // Domains (from DNS integrations — union of all enabled)
+        .route("/api/key-algorithms", get(handlers::key_algorithms::list))
         .route("/api/domains", get(handlers::domains::list_domains))
         // DNS integrations (multi-provider CRUD)
         .route(

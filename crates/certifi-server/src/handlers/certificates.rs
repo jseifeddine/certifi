@@ -9,6 +9,7 @@ use crate::services::pfx::{build_pfx, generate_pfx_password};
 use crate::services::renewal::run_issuance;
 use crate::services::secret_store::CertMaterial;
 use crate::AppState;
+use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -210,13 +211,7 @@ pub async fn create(
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
     if let Some(ref algo) = key_algo {
-        if !VALID_KEY_ALGOS.contains(&algo.as_str()) {
-            return Err(AppError::BadRequest(format!(
-                "Invalid key_algo '{}'. Valid options: {}",
-                algo,
-                VALID_KEY_ALGOS.join(", ")
-            )));
-        }
+        validate_key_algo(algo).map_err(AppError::BadRequest)?;
     }
 
     // Idempotent dedup: if an active cert with the same (CN, SAN set) already
@@ -430,10 +425,22 @@ pub async fn create(
     params(
         ("id" = String, Path, description = "Certificate UUID."),
     ),
+    request_body(
+        content = Option<RenewCertRequest>,
+        description = "Optional. Omit the body (or send `{}`) to renew with the current \
+                       algorithm. Send `key_algo` to re-issue with a different algorithm; \
+                       it is stored on the certificate and later renewals keep it. \
+                       `GET /api/key-algorithms` returns `rekey: true` on servers that \
+                       support this.",
+    ),
     responses(
         (status = 202, description = "Renewal queued. The cert's status flips to \
-                                       `pending` and the renewal scheduler runs immediately.",
+                                       `pending` and issuance starts immediately. `key_algo` \
+                                       is the algorithm being issued.",
             body = IssueCertResponse),
+        (status = 400, description = "Body is not valid JSON, has unknown fields, or names \
+                                       an unsupported `key_algo`. Nothing is changed.",
+            body = crate::openapi::ErrorBody),
         (status = 404, description = "No certificate with that id.",
             body = crate::openapi::ErrorBody),
         (status = 409, description = "Cert is already being issued / renewed.",
@@ -445,19 +452,12 @@ pub async fn renew(
     State(state): State<AppState>,
     auth: AuthUser,
     Path(id): Path<String>,
+    body: Bytes,
 ) -> Result<(StatusCode, Json<IssueCertResponse>)> {
     let cert = fetch_cert(&state, &id).await?;
     auth.require_for_domains(perms::CERTIFICATE_RENEW, &cert_domains(&cert))?;
-    audit::log(
-        &state.db,
-        &auth,
-        "certificate.renew",
-        "certificate",
-        Some(&id),
-        None,
-        Some(serde_json::json!({"common_name": cert.common_name})),
-    )
-    .await;
+
+    let new_algo = parse_renew_body(&body)?;
 
     if cert.status == "issuing" || cert.status == "pending" {
         return Err(AppError::Conflict(
@@ -466,17 +466,40 @@ pub async fn renew(
     }
 
     let now = Utc::now().to_rfc3339();
-    sqlx::query("UPDATE certificates SET status='pending', error=NULL, updated_at=? WHERE id=?")
-        .bind(&now)
-        .bind(&id)
-        .execute(&state.db)
-        .await?;
+    if !claim_for_renewal(&state.db, &id, new_algo.as_deref(), &now).await? {
+        // Another request flipped it to pending/issuing between the check above
+        // and the write.
+        return Err(AppError::Conflict(
+            "Certificate is already being issued".into(),
+        ));
+    }
     emit(&state.events, CertEvent::changed(&id));
+
+    // A change of algorithm is recorded as a before/after pair so the audit
+    // trail shows what the certificate moved from.
+    let changed_algo = new_algo
+        .as_deref()
+        .filter(|to| cert.key_algo.as_deref() != Some(*to));
+    let before = changed_algo.map(|_| serde_json::json!({"key_algo": cert.key_algo}));
+    let mut after = serde_json::json!({"common_name": cert.common_name});
+    if let Some(to) = changed_algo {
+        after["key_algo"] = serde_json::json!(to);
+    }
+    audit::log(
+        &state.db,
+        &auth,
+        "certificate.renew",
+        "certificate",
+        Some(&id),
+        before,
+        Some(after),
+    )
+    .await;
 
     let sans: Vec<String> = serde_json::from_str(&cert.sans).unwrap_or_default();
     let cn = cert.common_name.clone();
     let auto_renew = cert.auto_renew;
-    let key_algo = cert.key_algo.clone();
+    let key_algo = new_algo.or_else(|| cert.key_algo.clone());
 
     spawn_issuance(&state, &id, &cn, &sans, key_algo.as_deref(), "renewal");
 
@@ -486,13 +509,54 @@ pub async fn renew(
             id,
             status: "pending".into(),
             common_name: cert.common_name,
-            sans: serde_json::from_str(&cert.sans).unwrap_or_default(),
+            sans,
             auto_renew,
             key_algo,
             description: cert.description,
             deduplicated: false,
         }),
     ))
+}
+
+/// Parses the optional renew body into the requested algorithm, if any.
+///
+/// Read from raw bytes rather than `Option<Json<_>>`: axum turns a malformed
+/// body into `None` there, which would quietly renew with the old algorithm.
+fn parse_renew_body(body: &[u8]) -> Result<Option<String>> {
+    if body.iter().all(u8::is_ascii_whitespace) {
+        return Ok(None);
+    }
+    let req: RenewCertRequest = serde_json::from_slice(body)
+        .map_err(|e| AppError::BadRequest(format!("Invalid renew request body: {}", e)))?;
+    let algo = req
+        .key_algo
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    if let Some(ref a) = algo {
+        validate_key_algo(a).map_err(AppError::BadRequest)?;
+    }
+    Ok(algo)
+}
+
+/// Flips a settled cert to `pending`, storing `key_algo` when one is given.
+/// Returns false, writing nothing, if the row is already pending or issuing.
+async fn claim_for_renewal(
+    db: &sqlx::SqlitePool,
+    id: &str,
+    key_algo: Option<&str>,
+    now: &str,
+) -> Result<bool> {
+    let res = sqlx::query(
+        "UPDATE certificates
+         SET status='pending', error=NULL, key_algo=COALESCE(?, key_algo), updated_at=?
+         WHERE id=? AND status NOT IN ('pending', 'issuing')",
+    )
+    .bind(key_algo)
+    .bind(now)
+    .bind(id)
+    .execute(db)
+    .await?;
+    Ok(res.rows_affected() == 1)
 }
 
 /// PUT /api/certificates/:id/description — update the operator-set label.
@@ -1064,4 +1128,91 @@ fn pem_dl(pem: String, filename: &str) -> Response {
         pem,
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    #[test]
+    fn empty_or_blank_renew_body_keeps_the_current_algorithm() {
+        assert_eq!(parse_renew_body(b"").unwrap(), None);
+        assert_eq!(parse_renew_body(b" \n").unwrap(), None);
+        assert_eq!(parse_renew_body(b"{}").unwrap(), None);
+    }
+
+    #[test]
+    fn renew_body_with_a_valid_algorithm_is_returned() {
+        let algo = parse_renew_body(br#"{"key_algo":"ec-p256"}"#).unwrap();
+        assert_eq!(algo.as_deref(), Some("ec-p256"));
+    }
+
+    #[test]
+    fn renew_body_rejects_bad_input() {
+        for body in [
+            &br#"{"key_algo":"ec-p521"}"#[..],
+            br#"{"keyalgo":"ec-p256"}"#,
+            br#"{"key_algo":"ec-p256""#,
+            b"null",
+        ] {
+            assert!(
+                matches!(parse_renew_body(body), Err(AppError::BadRequest(_))),
+                "accepted {}",
+                String::from_utf8_lossy(body)
+            );
+        }
+    }
+
+    async fn db_with_cert(status: &str, key_algo: &str) -> sqlx::SqlitePool {
+        // One connection: each `sqlite::memory:` connection is its own database.
+        let db = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        crate::db::run_migrations(&db).await.unwrap();
+        sqlx::query(
+            "INSERT INTO certificates (id, common_name, sans, status, key_algo, created_at, updated_at)
+             VALUES ('c1', 'example.com', '[]', ?, ?, 't0', 't0')",
+        )
+        .bind(status)
+        .bind(key_algo)
+        .execute(&db)
+        .await
+        .unwrap();
+        db
+    }
+
+    async fn row(db: &sqlx::SqlitePool) -> (String, Option<String>) {
+        sqlx::query_as("SELECT status, key_algo FROM certificates WHERE id='c1'")
+            .fetch_one(db)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn claim_stores_the_new_algorithm() {
+        let db = db_with_cert("active", "ec-p384").await;
+        assert!(claim_for_renewal(&db, "c1", Some("ec-p256"), "t1")
+            .await
+            .unwrap());
+        assert_eq!(row(&db).await, ("pending".into(), Some("ec-p256".into())));
+    }
+
+    #[tokio::test]
+    async fn claim_without_algorithm_keeps_the_stored_one() {
+        let db = db_with_cert("failed", "ec-p384").await;
+        assert!(claim_for_renewal(&db, "c1", None, "t1").await.unwrap());
+        assert_eq!(row(&db).await, ("pending".into(), Some("ec-p384".into())));
+    }
+
+    #[tokio::test]
+    async fn claim_leaves_an_in_flight_cert_untouched() {
+        let db = db_with_cert("issuing", "ec-p384").await;
+        assert!(!claim_for_renewal(&db, "c1", Some("ec-p256"), "t1")
+            .await
+            .unwrap());
+        assert_eq!(row(&db).await, ("issuing".into(), Some("ec-p384".into())));
+    }
 }

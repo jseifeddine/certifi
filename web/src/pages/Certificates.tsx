@@ -4,6 +4,7 @@ import { Plus, RefreshCw } from 'lucide-react';
 import type { ColumnDef } from '@tanstack/react-table';
 import { certsApi } from '../api/certificates';
 import { useCertEvents } from '../api/events';
+import { keyAlgoLabel, useKeyAlgorithms } from '../api/keyAlgorithms';
 import { StatusBadge } from '../components/StatusBadge';
 import { usePageTitle } from '../components/Layout';
 import { DataTable } from '../components/ui/data-table';
@@ -16,6 +17,7 @@ export function Certificates() {
   const [certs, setCerts] = useState<Certificate[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
+  const keyAlgos = useKeyAlgorithms();
 
   useEffect(() => {
     let cancelled = false;
@@ -76,6 +78,15 @@ export function Certificates() {
         },
       },
       {
+        accessorKey: 'key_algo',
+        header: 'Key',
+        cell: ({ row }) => (
+          <span className="text-xs" style={{ color: 'var(--color-fg-muted)' }}>
+            {keyAlgoLabel(keyAlgos, row.original.key_algo)}
+          </span>
+        ),
+      },
+      {
         accessorKey: 'auto_renew',
         header: 'Renewal',
         cell: ({ row }) =>
@@ -93,7 +104,7 @@ export function Certificates() {
         ),
       },
     ],
-    [],
+    [keyAlgos],
   );
 
   if (error) return <div className="alert alert-error">{error}</div>;

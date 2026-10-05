@@ -57,7 +57,15 @@ enum Cmd {
     /// Show one certificate by id or common name.
     Get { target: String },
     /// Force-renew a certificate.
-    Renew { target: String },
+    Renew {
+        target: String,
+        /// Re-issue with this key algorithm (e.g. `ec-p256`). The server keeps
+        /// it for later renewals. See `key-algos` for the options.
+        #[arg(long)]
+        key_algo: Option<String>,
+    },
+    /// List the key algorithms the server supports and its default.
+    KeyAlgos,
     /// Delete a certificate.
     Delete { target: String },
     /// Request a cert (idempotent) and optionally write its files to disk.
@@ -411,13 +419,58 @@ async fn run_get(client: &Client, target: &str) -> Result<()> {
     Ok(())
 }
 
-async fn run_renew(client: &Client, target: &str) -> Result<()> {
+async fn run_renew(client: &Client, target: &str, key_algo: Option<&str>) -> Result<()> {
+    if let Some(algo) = key_algo {
+        // A server that predates re-keying ignores the body and re-issues with
+        // the old algorithm, which looks like success. Refuse up front instead.
+        let algos = match client.key_algorithms().await {
+            Ok(a) => a,
+            Err(certifi_client::Error::Http { status, .. })
+                if status == reqwest::StatusCode::NOT_FOUND =>
+            {
+                return Err(anyhow!(
+                    "this server does not support changing a certificate's key algorithm \
+                     (needs certifi v1.3.0 or later)"
+                ));
+            }
+            Err(e) => return Err(e.into()),
+        };
+        if !algos.rekey {
+            return Err(anyhow!(
+                "this server does not support changing a certificate's key algorithm"
+            ));
+        }
+        if !algos.algorithms.iter().any(|a| a.id == algo) {
+            let ids: Vec<&str> = algos.algorithms.iter().map(|a| a.id.as_str()).collect();
+            return Err(anyhow!(
+                "unsupported key algorithm '{}'. Valid options: {}",
+                algo,
+                ids.join(", ")
+            ));
+        }
+    }
     let id = resolve_id(client, target).await?;
-    let resp = client.renew_certificate(&id).await?;
+    let resp = client.renew_certificate_with(&id, key_algo).await?;
     println!(
-        "Renewal queued for {} (id {}). Status: {}",
-        resp.common_name, resp.id, resp.status
+        "Renewal queued for {} (id {}). Status: {}, key algorithm: {}",
+        resp.common_name,
+        resp.id,
+        resp.status,
+        resp.key_algo.as_deref().unwrap_or("server default")
     );
+    Ok(())
+}
+
+async fn run_key_algos(client: &Client) -> Result<()> {
+    let algos = client.key_algorithms().await?;
+    for a in &algos.algorithms {
+        let marker = if a.id == algos.default {
+            "  (default)"
+        } else {
+            ""
+        };
+        println!("{:<10} {}{}", a.id, a.label, marker);
+    }
     Ok(())
 }
 
@@ -841,7 +894,8 @@ async fn dispatch(cli: Cli) -> Result<u8> {
         Cmd::Init => unreachable!(),
         Cmd::List => run_list(&client).await?,
         Cmd::Get { target } => run_get(&client, &target).await?,
-        Cmd::Renew { target } => run_renew(&client, &target).await?,
+        Cmd::Renew { target, key_algo } => run_renew(&client, &target, key_algo.as_deref()).await?,
+        Cmd::KeyAlgos => run_key_algos(&client).await?,
         Cmd::Delete { target } => run_delete(&client, &target).await?,
         Cmd::Request(args) => return run_request(&client, &args).await,
         Cmd::Docs { slug } => run_docs(&client, slug.as_deref()).await?,

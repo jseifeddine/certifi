@@ -6,6 +6,7 @@ pub mod domains;
 pub mod events;
 pub mod health;
 pub mod integrations;
+pub mod key_algorithms;
 pub mod oidc;
 pub mod roles;
 pub mod settings;

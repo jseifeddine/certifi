@@ -17,6 +17,7 @@ pub struct SettingsResponse {
     pub acme_ca: String,
     pub acme_registered: bool,
     pub acme_account_url: String,
+    #[schema(value_type = KeyAlgo)]
     pub key_algo: String,
     /// Setting keys whose values are locked by an environment variable.
     /// The UI renders these fields as read-only; the API rejects writes to them.
@@ -26,6 +27,7 @@ pub struct SettingsResponse {
 #[derive(Deserialize, ToSchema)]
 pub struct UpdateSettingsRequest {
     pub acme_ca: Option<String>,
+    #[schema(value_type = Option<KeyAlgo>)]
     pub key_algo: Option<String>,
 }
 
@@ -68,7 +70,7 @@ pub async fn get_settings(
         key_algo: map
             .get(S_KEY_ALGO)
             .cloned()
-            .unwrap_or_else(|| "ec-p384".to_string()),
+            .unwrap_or_else(|| KeyAlgo::DEFAULT.as_str().to_string()),
         locked,
     }))
 }
@@ -82,7 +84,7 @@ pub async fn get_settings(
     responses(
         (status = 200, description = "Settings updated.", body = crate::openapi::OkResponse),
         (status = 400, description = "Attempted to update a setting locked by an environment \
-                                       variable.",
+                                       variable, or `key_algo` is not a supported algorithm.",
             body = crate::openapi::ErrorBody),
         (status = 401, description = "Not authenticated.", body = crate::openapi::ErrorBody),
         (status = 403, description = "Admin role required.", body = crate::openapi::ErrorBody),
@@ -94,6 +96,9 @@ pub async fn update_settings(
     Json(req): Json<UpdateSettingsRequest>,
 ) -> Result<Json<serde_json::Value>> {
     auth.require(perms::SETTINGS_UPDATE)?;
+    if let Some(algo) = &req.key_algo {
+        validate_key_algo(algo).map_err(AppError::BadRequest)?;
+    }
     let now = Utc::now().to_rfc3339();
     let locked = state.config.locked_keys();
     let mut updates: Vec<(String, String)> = Vec::new();

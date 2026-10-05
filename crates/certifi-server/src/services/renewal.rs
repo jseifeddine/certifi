@@ -210,16 +210,12 @@ pub async fn run_issuance(
 ) -> anyhow::Result<String> {
     let now = Utc::now().to_rfc3339();
 
-    // Resolve effective algorithm: per-cert override → global setting → hardcoded default
-    let key_algo = key_algo_override
-        .or_else(|| settings.get(S_KEY_ALGO).map(String::as_str))
-        .unwrap_or("ec-p384");
-
-    if !VALID_KEY_ALGOS.contains(&key_algo) {
+    let key_algo = resolve_key_algo(key_algo_override, settings);
+    if KeyAlgo::parse(key_algo).is_none() {
         anyhow::bail!(
             "Unsupported key algorithm '{}'. Valid options: {}",
             key_algo,
-            VALID_KEY_ALGOS.join(", ")
+            KeyAlgo::valid_list()
         );
     }
 
@@ -273,6 +269,18 @@ pub async fn run_issuance(
         expires_at
     );
     Ok(expires_at)
+}
+
+/// Effective algorithm for one issuance: per-cert value → global setting →
+/// built-in default. Not validated here — the caller rejects an unknown id so
+/// the failure lands on the cert row with a readable message.
+fn resolve_key_algo<'a>(
+    key_algo_override: Option<&'a str>,
+    settings: &'a HashMap<String, String>,
+) -> &'a str {
+    key_algo_override
+        .or_else(|| settings.get(S_KEY_ALGO).map(String::as_str))
+        .unwrap_or(KeyAlgo::DEFAULT.as_str())
 }
 
 async fn build_acme_client(
@@ -337,4 +345,30 @@ async fn fetch_email_recipients(db: &SqlitePool) -> anyhow::Result<Vec<String>> 
             .fetch_all(db)
             .await?;
     Ok(rows.into_iter().filter_map(|(e,)| e).collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn settings(algo: Option<&str>) -> HashMap<String, String> {
+        algo.map(|a| (S_KEY_ALGO.to_string(), a.to_string()))
+            .into_iter()
+            .collect()
+    }
+
+    #[test]
+    fn per_cert_algorithm_wins_over_global_setting() {
+        let s = settings(Some("ec-p384"));
+        assert_eq!(resolve_key_algo(Some("ec-p256"), &s), "ec-p256");
+    }
+
+    #[test]
+    fn falls_back_to_global_then_built_in_default() {
+        assert_eq!(
+            resolve_key_algo(None, &settings(Some("rsa-2048"))),
+            "rsa-2048"
+        );
+        assert_eq!(resolve_key_algo(None, &settings(None)), "ec-p384");
+    }
 }

@@ -2,6 +2,9 @@ import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { certsApi } from '../api/certificates';
 import { useCertEvents } from '../api/events';
+import { keyAlgoLabel, useKeyAlgorithms } from '../api/keyAlgorithms';
+import { useAuth } from '../auth';
+import { perms } from '../lib/perms';
 import { useConfirm } from '../components/ConfirmDialog';
 import { RefreshCw } from 'lucide-react';
 const IconRefresh = (p: React.SVGProps<SVGSVGElement>) => <RefreshCw className="h-4 w-4" {...p} />;
@@ -10,7 +13,7 @@ import { PemViewer } from '../components/PemViewer';
 import { StatusBadge } from '../components/StatusBadge';
 import { useToast } from '../components/Toast';
 import { daysUntil, expiryClass, fmtDate } from '../lib/format';
-import type { Certificate } from '../types';
+import type { Certificate, KeyAlgorithms } from '../types';
 
 export function CertificateDetail() {
   usePageTitle('Certificate');
@@ -22,6 +25,8 @@ export function CertificateDetail() {
   const [error, setError] = useState<string | null>(null);
   const [renewing, setRenewing] = useState(false);
   const [togglingAr, setTogglingAr] = useState(false);
+  const keyAlgos = useKeyAlgorithms();
+  const { has } = useAuth();
 
   useEffect(() => {
     let cancelled = false;
@@ -108,6 +113,9 @@ export function CertificateDetail() {
           <button className="btn btn-secondary btn-sm" onClick={renew} disabled={isPending || renewing}>
             <IconRefresh /> {renewing ? 'Renewing…' : 'Renew'}
           </button>
+          {has(perms.CERTIFICATE_RENEW) && keyAlgos?.rekey && (
+            <ReissueAs cert={cert} algos={keyAlgos} disabled={isPending || renewing} onDone={setCert} />
+          )}
           <button
             className={`btn btn-sm ${cert.auto_renew ? 'btn-success' : 'btn-secondary'}`}
             onClick={toggleAutoRenew}
@@ -143,7 +151,7 @@ export function CertificateDetail() {
               ? <div className="space-y-0.5">{cert.sans.map((s) => <div key={s}>{s}</div>)}</div>
               : <>—</>}
           />
-          <Detail label="Key Algorithm" value={cert.key_algo ?? '—'} />
+          <Detail label="Key Algorithm" value={keyAlgoLabel(keyAlgos, cert.key_algo)} />
           <Detail
             label="Expires"
             valueNode={
@@ -163,6 +171,73 @@ export function CertificateDetail() {
       {cert.has_files && (
         <PemViewer certId={cert.id} commonName={cert.common_name} />
       )}
+    </div>
+  );
+}
+
+/** Re-issue the certificate with a different key algorithm. The server keeps
+ *  the new algorithm for later renewals. */
+function ReissueAs({
+  cert,
+  algos,
+  disabled,
+  onDone,
+}: {
+  cert: Certificate;
+  algos: KeyAlgorithms;
+  disabled: boolean;
+  onDone: (next: Certificate) => void;
+}) {
+  const toast = useToast();
+  const confirm = useConfirm();
+  const current = cert.key_algo ?? algos.default;
+  const [target, setTarget] = useState(current);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => { setTarget(current); }, [current]);
+
+  async function reissue() {
+    const ok = await confirm({
+      title: 'Re-issue with a new key',
+      body: `Re-issue ${cert.common_name} as ${keyAlgoLabel(algos, target)} (currently ${keyAlgoLabel(algos, current)})? `
+        + 'A new private key is generated and later renewals keep this algorithm. '
+        + 'Anything pinned to the current public key (key pins, DANE TLSA records) must be updated.',
+      confirmLabel: 'Re-issue',
+    });
+    if (!ok) return;
+    setBusy(true);
+    try {
+      await certsApi.renew(cert.id, target);
+      onDone(await certsApi.get(cert.id));
+    } catch (ex) {
+      toast.error('Re-issue failed: ' + (ex instanceof Error ? ex.message : ex));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="flex gap-1 items-center">
+      <select
+        className="w-auto"
+        aria-label="Key algorithm"
+        value={target}
+        onChange={(e) => setTarget(e.target.value)}
+        disabled={disabled || busy}
+        autoComplete="off"
+      >
+        {algos.algorithms.map((a) => (
+          <option key={a.id} value={a.id}>{a.label}</option>
+        ))}
+      </select>
+      <button
+        className="btn btn-secondary btn-sm"
+        onClick={reissue}
+        disabled={disabled || busy || target === current}
+        title="Re-issue this certificate with the selected key algorithm"
+      >
+        {busy ? 'Re-issuing…' : 'Re-issue as…'}
+      </button>
     </div>
   );
 }

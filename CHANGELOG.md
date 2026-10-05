@@ -6,6 +6,39 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.3.0] — 2026-10-05
+
+### Added
+
+- **Change an existing certificate's key algorithm** ([#6](https://github.com/jseifeddine/certifi/issues/6)).
+  `POST /api/certificates/:id/renew` takes an optional `{"key_algo": "ec-p256"}` body: the cert
+  is re-issued with that algorithm, and later automatic renewals keep it. No body, or `{}`, renews
+  as before. Same `certificate.renew` permission as a plain renew; the audit entry records the old
+  and new algorithm. The current cert keeps being served until the new one is issued.
+  - Web admin: a "Re-issue as…" control on the certificate page, and a Key column in the list.
+  - CLI: `certifi-cli renew <cert> --key-algo ec-p256`. It checks the server supports re-keying
+    first, so it never silently re-issues with the old algorithm on an older server.
+- **`GET /api/key-algorithms`** lists the supported algorithms, the effective default and a
+  `rekey` capability flag. Open to any authenticated user or token, not just admins.
+  `certifi-cli key-algos` prints it. The web admin's dropdowns are built from it instead of
+  hardcoded lists, so Settings now offers the RSA options too.
+- `key_algo` is a `KeyAlgo` enum in the OpenAPI spec everywhere it appears.
+- `certifi-client`: `renew_certificate_with(id, key_algo)` and `key_algorithms()`.
+
+### Fixed
+
+- `PUT /api/settings` and the provisioning file now reject an unsupported `key_algo` (`400`, or a
+  startup error naming the valid options). Before, the value was stored and every new issuance
+  then failed.
+- Renew with a malformed body is now rejected with `400`; it used to be ignored.
+
+### Changed
+
+- The "recommended" label on `ec-p384` is gone from the web admin and `provisioning.example.yaml`.
+  The built-in default stays `ec-p384`; `ec-p256` matches Mozilla's intermediate TLS profile and
+  works with TLS 1.2 clients that only offer P-256.
+- Docs note that changing the global `key_algo` setting only affects new certificates.
+
 ## [1.2.0] — 2026-09-21
 
 ### Added
@@ -172,7 +205,8 @@ First production release.
   crypto helpers); `rustfmt` + `clippy -D warnings` enforced in CI; and a sidebar footer showing
   the running version linked to its GitHub release alongside a version-pinned Docs link.
 
-[Unreleased]: https://github.com/jseifeddine/certifi/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/jseifeddine/certifi/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/jseifeddine/certifi/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/jseifeddine/certifi/compare/v1.1.4...v1.2.0
 [1.1.4]: https://github.com/jseifeddine/certifi/compare/v1.1.3...v1.1.4
 [1.1.3]: https://github.com/jseifeddine/certifi/compare/v1.1.2...v1.1.3

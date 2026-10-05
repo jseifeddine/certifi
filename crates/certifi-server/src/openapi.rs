@@ -108,6 +108,7 @@ impl Modify for SecurityAddon {
         crate::handlers::certificates::download_privkey,
         crate::handlers::certificates::download_pfx,
         crate::handlers::certificates::pem_bundle,
+        crate::handlers::key_algorithms::list,
         // DNS integrations
         crate::handlers::integrations::list,
         crate::handlers::integrations::create,
@@ -177,6 +178,10 @@ impl Modify for SecurityAddon {
         certifi_types::IssueCertRequest,
         certifi_types::IssueCertResponse,
         certifi_types::CertificateView,
+        certifi_types::KeyAlgo,
+        certifi_types::RenewCertRequest,
+        certifi_types::KeyAlgorithmInfo,
+        certifi_types::KeyAlgorithmsResponse,
         crate::handlers::certificates::PfxResponse,
         crate::handlers::certificates::PemBundle,
         crate::handlers::certificates::UpdateAutoRenewRequest,
@@ -247,4 +252,42 @@ pub async fn openapi_json() -> Response {
     let spec = ApiDoc::openapi();
     let body = serde_json::to_vec(&spec).unwrap_or_else(|_| b"{}".to_vec());
     ([(header::CONTENT_TYPE, "application/json")], body).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every `key_algo`-shaped field must point at the `KeyAlgo` enum, so a
+    /// client generated from the spec gets a typed field rather than a string.
+    #[test]
+    fn key_algo_fields_reference_the_enum() {
+        let spec = serde_json::to_value(ApiDoc::openapi()).unwrap();
+        let schemas = &spec["components"]["schemas"];
+        let ids: Vec<&str> = schemas["KeyAlgo"]["enum"]
+            .as_array()
+            .expect("KeyAlgo is an enum")
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(ids, ["ec-p256", "ec-p384", "rsa-2048", "rsa-4096"]);
+
+        for (schema, field) in [
+            ("IssueCertRequest", "key_algo"),
+            ("IssueCertResponse", "key_algo"),
+            ("CertificateView", "key_algo"),
+            ("RenewCertRequest", "key_algo"),
+            ("SettingsResponse", "key_algo"),
+            ("UpdateSettingsRequest", "key_algo"),
+            ("KeyAlgorithmsResponse", "default"),
+            ("KeyAlgorithmInfo", "id"),
+        ] {
+            let prop = schemas[schema]["properties"][field].to_string();
+            assert!(
+                prop.contains("#/components/schemas/KeyAlgo"),
+                "{schema}.{field} is {prop}"
+            );
+        }
+        assert!(spec["paths"]["/api/key-algorithms"]["get"].is_object());
+    }
 }

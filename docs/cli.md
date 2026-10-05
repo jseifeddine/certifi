@@ -89,7 +89,8 @@ Override with `--config /custom/path` or `CERTIFI_CONFIG=/custom/path`. The file
 | `list` | List all certificates |
 | `get <id-or-cn>` | Show one certificate as JSON |
 | `request -d cn [-d san …]` | Idempotently request a cert; optionally write files; the cron-friendly command |
-| `renew <id-or-cn>` | Force-renew a cert (queues issuance on the server) |
+| `renew <id-or-cn> [--key-algo ALGO]` | Force-renew a cert (queues issuance on the server). With `--key-algo`, re-issue it with that algorithm; the server keeps it for later renewals. Needs a v1.3.0+ server; the CLI checks first and refuses on an older one |
+| `key-algos` | List the key algorithms the server supports and mark its default |
 | `delete <id-or-cn>` | Delete a cert |
 | `docs [slug]` | Fetch documentation from the connected server (e.g. `certifi-cli docs cli`). With no `slug`, prints the table of contents. Output is rendered as styled terminal text via [termimad](https://github.com/Canop/termimad); pipe to a file or pager (`certifi-cli docs api > api.md`) to get raw markdown. |
 | `integrations <sub>` | Manage DNS integrations from the terminal — indispensable for headless deployments without the web admin. See below for the sub-commands. |

@@ -25,8 +25,11 @@
 # ─────────────────────────────────────────────────────────────────────
 acme:
   ca_url: https://acme-v02.api.letsencrypt.org/directory
-  # Algorithm used to generate new cert private keys. One of:
-  # ec-p384 (recommended), ec-p256, rsa-2048, rsa-4096.
+  # Algorithm used to generate private keys for NEW certs. One of:
+  # ec-p256, ec-p384, rsa-2048, rsa-4096 (built-in default: ec-p384).
+  # ec-p256 matches Mozilla's "intermediate" TLS profile and the certbot
+  # default; a P-384 cert fails with TLS 1.2 clients that only offer P-256.
+  # Existing certs keep their algorithm; re-issue them to change it.
   key_algo: ec-p384
 
 # ─────────────────────────────────────────────────────────────────────

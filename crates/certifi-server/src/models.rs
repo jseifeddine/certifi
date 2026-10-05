@@ -2,7 +2,10 @@ use serde::{Deserialize, Serialize};
 
 // Re-export wire types from the shared crate so handlers can keep importing
 // from `crate::models::*` without caring where each type physically lives.
-pub use certifi_types::{CertificateView, IssueCertRequest, IssueCertResponse};
+pub use certifi_types::{
+    CertificateView, IssueCertRequest, IssueCertResponse, KeyAlgo, KeyAlgorithmInfo,
+    KeyAlgorithmsResponse, RenewCertRequest,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct User {
@@ -94,8 +97,26 @@ impl From<Certificate> for CertificateView {
     }
 }
 
-/// Valid key algorithm identifiers accepted by the API and `generate_csr`.
-pub const VALID_KEY_ALGOS: &[&str] = &["ec-p256", "ec-p384", "rsa-2048", "rsa-4096"];
+/// Checks a requested key algorithm against `KeyAlgo::ALL`, returning the
+/// 400 message every endpoint that accepts one uses.
+pub fn validate_key_algo(algo: &str) -> std::result::Result<KeyAlgo, String> {
+    KeyAlgo::parse(algo).ok_or_else(|| {
+        format!(
+            "Invalid key_algo '{}'. Valid options: {}",
+            algo,
+            KeyAlgo::valid_list()
+        )
+    })
+}
+
+/// The algorithm a request without `key_algo` gets: the global setting when
+/// it names a supported algorithm, else the built-in default.
+pub fn effective_default_key_algo(settings: &std::collections::HashMap<String, String>) -> KeyAlgo {
+    settings
+        .get(S_KEY_ALGO)
+        .and_then(|s| KeyAlgo::parse(s))
+        .unwrap_or(KeyAlgo::DEFAULT)
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct Setting {
@@ -110,7 +131,7 @@ pub struct Setting {
 pub const S_ACME_CA: &str = "acme_ca";
 pub const S_ACME_ACCOUNT_KEY: &str = "acme_account_key"; // base64 PKCS8 DER
 pub const S_ACME_ACCOUNT_URL: &str = "acme_account_url";
-pub const S_KEY_ALGO: &str = "key_algo"; // ec-p384, ec-p256
+pub const S_KEY_ALGO: &str = "key_algo"; // a KeyAlgo id
 
 // DNS integration config now lives in the `integrations` table — see the
 // integrations module for the per-kind config keys (cf_api_token, pdns_url,
