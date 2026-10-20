@@ -16,6 +16,8 @@ Each [release](https://github.com/jseifeddine/certifi/releases/latest) attaches:
 
 Rust's standard Windows target dropped Windows 7, 8.1 and Server 2012 R2 in Rust 1.78. On those systems the normal `.exe` exits straight away with an "entry point not found" error. The `-legacy` build targets `x86_64-win7-windows-msvc` instead, so use it on 2012 R2. Check `SHA256SUMS-<version>-windows-amd64.txt` before installing.
 
+The `.exe` files are self-contained: the C runtime is linked in, so they don't need the Visual C++ Redistributable. **1.4.0 was the exception.** Its Windows builds fail to start with "VCRUNTIME140.dll is missing" on a machine without the redistributable, so use 1.4.1 or later. Compatibility mode in the file's properties doesn't help and isn't needed.
+
 Every CI run on a pull request also uploads the three `.exe` files as the `certifi-windows-amd64` artifact (Actions → the run → Artifacts), for testing a change before it's released.
 
 ## Layout

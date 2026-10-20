@@ -1,0 +1,7 @@
+# Link the MSVC C runtime statically on Windows, so the .exe files don't need
+# the Visual C++ Redistributable (VCRUNTIME140.dll and the Universal CRT).
+# Windows 10+ ships the UCRT but not VCRUNTIME140, and Server 2012 R2 boxes
+# usually have neither. A RUSTFLAGS environment variable replaces this list
+# entirely, so the CI step that sets RUSTFLAGS repeats the flag.
+[target.'cfg(all(windows, target_env = "msvc"))']
+rustflags = ["-C", "target-feature=+crt-static"]

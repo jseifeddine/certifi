@@ -6,6 +6,14 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+
+- **Windows `.exe` files no longer need the Visual C++ Redistributable.** 1.4.0's builds linked the
+  C runtime dynamically, so on a machine without the redistributable (most Server 2012 R2 boxes)
+  they failed to start with "VCRUNTIME140.dll is missing". The runtime is now linked statically
+  (`.cargo/config.toml`). CI and the release workflow fail if a Windows build imports the VC++
+  runtime again, or if the legacy build imports Windows 10-only APIs.
+
 ## [1.4.0] — 2026-10-20
 
 ### Fixed
