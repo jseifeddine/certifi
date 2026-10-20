@@ -3,5 +3,15 @@
 # Windows 10+ ships the UCRT but not VCRUNTIME140, and Server 2012 R2 boxes
 # usually have neither. A RUSTFLAGS environment variable replaces this list
 # entirely, so the CI step that sets RUSTFLAGS repeats the flag.
+#
+# +crt-static alone still left the server importing VCRUNTIME140.dll: an
+# object in one of its C dependencies asks for the DLL runtime by default.
+# Telling the linker to ignore the DLL runtime's import libraries makes the
+# static ones the only choice.
 [target.'cfg(all(windows, target_env = "msvc"))']
-rustflags = ["-C", "target-feature=+crt-static"]
+rustflags = [
+    "-C", "target-feature=+crt-static",
+    "-C", "link-arg=/NODEFAULTLIB:msvcrt.lib",
+    "-C", "link-arg=/NODEFAULTLIB:vcruntime.lib",
+    "-C", "link-arg=/NODEFAULTLIB:ucrt.lib",
+]
