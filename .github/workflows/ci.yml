@@ -106,9 +106,10 @@ jobs:
       - name: Build legacy CLI (Windows Server 2012 R2 and older)
         # windows-targets 0.48 (still in the tree) ships import libraries only
         # for the exact x86_64-pc-windows-msvc triple; raw-dylib links the
-        # Windows APIs without them.
+        # Windows APIs without them. Setting RUSTFLAGS overrides
+        # .cargo/config.toml, so the static-CRT flag is repeated here.
         env:
-          RUSTFLAGS: --cfg windows_raw_dylib
+          RUSTFLAGS: --cfg windows_raw_dylib -C target-feature=+crt-static
         run: cargo +${{ env.RUST_NIGHTLY_WIN7 }} build --release --locked -p certifi-client -Z build-std=std,panic_abort --target x86_64-win7-windows-msvc
 
       - name: Stage
@@ -125,6 +126,15 @@ jobs:
           name: certifi-windows-amd64
           path: dist/*.exe
           if-no-files-found: error
+
+      # Catch a runtime dependency before someone finds it on a server.
+      - name: Check the .exe files run without extra runtimes
+        shell: bash
+        run: |
+          rc=0
+          scripts/check-windows-exe.sh dist/certifi-windows-amd64.exe dist/certifi-cli-windows-amd64.exe || rc=1
+          scripts/check-windows-exe.sh --legacy dist/certifi-cli-windows-amd64-legacy.exe || rc=1
+          exit $rc
 
   # ---------------------------------------------------------------------------
   # The optional React + Vite admin UI must typecheck and build.

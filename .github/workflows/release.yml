@@ -165,9 +165,10 @@ jobs:
       - name: Build legacy CLI
         # windows-targets 0.48 (still in the tree) ships import libraries only
         # for the exact x86_64-pc-windows-msvc triple; raw-dylib links the
-        # Windows APIs without them.
+        # Windows APIs without them. Setting RUSTFLAGS overrides
+        # .cargo/config.toml, so the static-CRT flag is repeated here.
         env:
-          RUSTFLAGS: --cfg windows_raw_dylib
+          RUSTFLAGS: --cfg windows_raw_dylib -C target-feature=+crt-static
         run: cargo +${{ env.RUST_NIGHTLY_WIN7 }} build --release --locked -p certifi-client -Z build-std=std,panic_abort --target x86_64-win7-windows-msvc
 
       - name: Stage + checksum artifacts
@@ -178,6 +179,8 @@ jobs:
           cp target/release/certifi.exe     "dist/certifi-${TAG}-windows-amd64.exe"
           cp target/release/certifi-cli.exe "dist/certifi-cli-${TAG}-windows-amd64.exe"
           cp target/x86_64-win7-windows-msvc/release/certifi-cli.exe "dist/certifi-cli-${TAG}-windows-amd64-legacy.exe"
+          scripts/check-windows-exe.sh "dist/certifi-${TAG}-windows-amd64.exe" "dist/certifi-cli-${TAG}-windows-amd64.exe"
+          scripts/check-windows-exe.sh --legacy "dist/certifi-cli-${TAG}-windows-amd64-legacy.exe"
           ( cd dist && sha256sum certifi-* > "SHA256SUMS-${TAG}-windows-amd64.txt" )
           ls -la dist
 

@@ -136,6 +136,7 @@ An Edge server isn't domain-joined and has no IIS. Install the CLI the same way,
 | Symptom | Cause / fix |
 |---|---|
 | CLI exits immediately; "entry point not found" in the event log | Plain `-windows-amd64.exe` on Server 2012 R2 or older; use the `-legacy` build. |
+| "VCRUNTIME140.dll is missing" | A 1.4.0 build; those needed the Visual C++ Redistributable. Use 1.4.1 or later. |
 | `No Exchange Management Shell snap-in found` | Not on an Exchange server, or Exchange 2010 run without `-Version 2.0`. |
 | `certifi-cli exited with 1` and `401`/`403` in the log | The token is wrong or its role lacks `certificate.create` / `certificate.download` for one of the names. |
 | `No URL/token available` when run as the task | The task's account can't read `C:\ProgramData\Certifi\certifi.json`. Check the folder permissions. |
