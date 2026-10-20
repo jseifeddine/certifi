@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.4.1] — 2026-10-20
+
 ### Fixed
 
 - **Windows `.exe` files no longer need the Visual C++ Redistributable.** 1.4.0's builds linked the
@@ -246,7 +248,8 @@ First production release.
   crypto helpers); `rustfmt` + `clippy -D warnings` enforced in CI; and a sidebar footer showing
   the running version linked to its GitHub release alongside a version-pinned Docs link.
 
-[Unreleased]: https://github.com/jseifeddine/certifi/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/jseifeddine/certifi/compare/v1.4.1...HEAD
+[1.4.1]: https://github.com/jseifeddine/certifi/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/jseifeddine/certifi/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/jseifeddine/certifi/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/jseifeddine/certifi/compare/v1.1.4...v1.2.0
