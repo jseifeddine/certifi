@@ -7,11 +7,14 @@
 # The C runtime is linked statically (.cargo/config.toml), so no exe may
 # import VCRUNTIME140.dll or the Universal CRT (api-ms-win-crt-*.dll); a
 # machine without the VC++ Redistributable refuses to start it. The legacy
-# build must also stay off ProcessPrng (bcryptprimitives.dll), which only
+# build must also stay off bcryptprimitives.dll (ProcessPrng), which only
 # exists on Windows 10 / Server 2016 and later.
 #
-# Import names are plain ASCII in the PE import table, so grep -a is enough.
+# Reads the real import table (pe-imports.py), not strings in the file.
 set -euo pipefail
+
+here=$(cd "$(dirname "$0")" && pwd)
+py=$(command -v python3 || command -v python)
 
 legacy=0
 if [ "${1:-}" = "--legacy" ]; then
@@ -19,18 +22,23 @@ if [ "${1:-}" = "--legacy" ]; then
   shift
 fi
 
+forbidden='^(vcruntime140(_[0-9]+)?|msvcp140(_[0-9]+)?|api-ms-win-crt-[a-z-]+-l1-1-0)\.dll$'
+if [ "$legacy" = 1 ]; then
+  forbidden="$forbidden|^bcryptprimitives\.dll$"
+fi
+
 status=0
 for exe in "$@"; do
-  forbidden='vcruntime140[_0-9]*\.dll|msvcp140\.dll|api-ms-win-crt-[a-z-]+-l1-1-0\.dll'
-  if [ "$legacy" = 1 ]; then
-    forbidden="$forbidden|ProcessPrng|bcryptprimitives\.dll"
-  fi
-  found=$(grep -aoiE "$forbidden" "$exe" | sort -uf | tr '\n' ' ' || true)
+  dlls=$("$py" "$here/pe-imports.py" "$exe")
+  found=$(printf '%s\n' "$dlls" | grep -iE "$forbidden" | sort -uf | tr '\n' ' ' || true)
   if [ -n "$found" ]; then
     echo "::error::$exe imports $found"
+    # Which functions come from them points at the dependency responsible.
+    "$py" "$here/pe-imports.py" --functions "$exe" \
+      | grep -iF -f <(printf '%s!\n' $found) | sed 's/^/    /' || true
     status=1
   else
-    echo "$exe: OK"
+    echo "$exe: OK ($(printf '%s\n' "$dlls" | sort -uf | tr '\n' ' '))"
   fi
 done
 exit $status

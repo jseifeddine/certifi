@@ -121,6 +121,12 @@ jobs:
           cp target/x86_64-win7-windows-msvc/release/certifi-cli.exe dist/certifi-cli-windows-amd64-legacy.exe
           ls -la dist
 
+      - uses: actions/upload-artifact@v4
+        with:
+          name: certifi-windows-amd64
+          path: dist/*.exe
+          if-no-files-found: error
+
       # Catch a runtime dependency before someone finds it on a server.
       - name: Check the .exe files run without extra runtimes
         shell: bash
@@ -129,12 +135,6 @@ jobs:
           scripts/check-windows-exe.sh dist/certifi-windows-amd64.exe dist/certifi-cli-windows-amd64.exe || rc=1
           scripts/check-windows-exe.sh --legacy dist/certifi-cli-windows-amd64-legacy.exe || rc=1
           exit $rc
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: certifi-windows-amd64
-          path: dist/*.exe
-          if-no-files-found: error
 
   # ---------------------------------------------------------------------------
   # The optional React + Vite admin UI must typecheck and build.
