@@ -601,8 +601,8 @@ fn ec_jwk_and_thumbprint(pub_key_bytes: &[u8]) -> Result<(Value, String)> {
 /// Valid values: "ec-p256", "ec-p384", "rsa-2048", "rsa-4096"
 fn generate_csr(cn: &str, domains: &[String], key_algo: &str) -> Result<(String, Vec<u8>)> {
     match key_algo {
-        "rsa-2048" => generate_rsa_csr(cn, 2048),
-        "rsa-4096" => generate_rsa_csr(cn, 4096),
+        "rsa-2048" => generate_rsa_csr(cn, domains, 2048),
+        "rsa-4096" => generate_rsa_csr(cn, domains, 4096),
         _ => generate_ec_csr(cn, domains, key_algo),
     }
 }
@@ -630,14 +630,17 @@ fn generate_ec_csr(cn: &str, domains: &[String], key_algo: &str) -> Result<(Stri
 
 /// RSA CSR via openssl (2048 or 4096 bits).
 ///
-/// The CSR contains only the CN; SANs are set by the ACME order identifiers,
-/// which the CA (e.g. Let's Encrypt) uses to populate the issued certificate
-/// regardless of what the CSR itself contains.
-fn generate_rsa_csr(cn: &str, bits: u32) -> Result<(String, Vec<u8>)> {
+/// Every name in `domains` goes into a subjectAltName extension, exactly as
+/// in the EC CSR. The CA checks the CSR's names against the order's
+/// identifiers at finalize; a CN-only CSR for a multi-name order is rejected
+/// with "CSR does not specify same identifiers as Order".
+fn generate_rsa_csr(cn: &str, domains: &[String], bits: u32) -> Result<(String, Vec<u8>)> {
     use anyhow::Context as _;
     use openssl::hash::MessageDigest;
     use openssl::pkey::PKey;
     use openssl::rsa::Rsa;
+    use openssl::stack::Stack;
+    use openssl::x509::extension::SubjectAlternativeName;
     use openssl::x509::{X509NameBuilder, X509ReqBuilder};
 
     let rsa = Rsa::generate(bits).context("RSA key generation")?;
@@ -656,6 +659,18 @@ fn generate_rsa_csr(cn: &str, bits: u32) -> Result<(String, Vec<u8>)> {
     let mut req = X509ReqBuilder::new()?;
     req.set_pubkey(&pkey)?;
     req.set_subject_name(&name.build())?;
+
+    let mut san = SubjectAlternativeName::new();
+    for d in domains {
+        san.dns(d);
+    }
+    let san = san
+        .build(&req.x509v3_context(None))
+        .context("building subjectAltName")?;
+    let mut extensions = Stack::new()?;
+    extensions.push(san)?;
+    req.add_extensions(&extensions)?;
+
     req.sign(&pkey, MessageDigest::sha256())?;
 
     let csr_der = req.build().to_der()?;
@@ -759,5 +774,48 @@ mod tests {
     #[test]
     fn pem_to_der_returns_empty_on_garbage() {
         assert!(pem_to_der("not a pem").is_empty());
+    }
+
+    /// The DNS names in a CSR's subjectAltName extension, in order.
+    fn csr_san_names(der: &[u8]) -> Vec<String> {
+        use x509_parser::certification_request::X509CertificationRequest;
+        use x509_parser::extensions::{GeneralName, ParsedExtension};
+        use x509_parser::prelude::FromDer;
+
+        let (_, csr) = X509CertificationRequest::from_der(der).expect("parse CSR");
+        let mut names = Vec::new();
+        for ext in csr.requested_extensions().into_iter().flatten() {
+            if let ParsedExtension::SubjectAlternativeName(san) = ext {
+                for gn in &san.general_names {
+                    if let GeneralName::DNSName(d) = gn {
+                        names.push(d.to_string());
+                    }
+                }
+            }
+        }
+        names
+    }
+
+    fn names(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn rsa_csr_lists_every_order_identifier() {
+        // Multi-name RSA orders failed at finalize with "CSR does not specify
+        // same identifiers as Order" when the CSR carried only the CN.
+        let domains = names(&["remote.example.com", "example.com", "host.int.example.com"]);
+        let (key, der) = generate_csr(&domains[0], &domains, "rsa-2048").unwrap();
+        assert!(key.contains("BEGIN PRIVATE KEY"));
+        assert_eq!(csr_san_names(&der), domains);
+    }
+
+    #[test]
+    fn ec_csr_lists_every_order_identifier() {
+        let domains = names(&["a.example.com", "*.example.com"]);
+        for algo in ["ec-p256", "ec-p384"] {
+            let (_, der) = generate_csr(&domains[0], &domains, algo).unwrap();
+            assert_eq!(csr_san_names(&der), domains, "{algo}");
+        }
     }
 }
