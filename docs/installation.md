@@ -81,7 +81,7 @@ If the original startup password has scrolled out of your logs, restart with `RE
 
 | Variable | Default | Description |
 |---|---|---|
-| `DATA_DIR` | `./data` | Directory for the SQLite database |
+| `DATA_DIR` | `./data` (Windows: `%ProgramData%\Certifi\data`) | Directory for the SQLite database |
 | `LISTEN_ADDR` | `0.0.0.0:8080` | TCP address and port |
 | `RUST_LOG` | `certifi=info` | Log filter — see [tracing-subscriber docs](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html) |
 

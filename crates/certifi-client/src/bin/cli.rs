@@ -32,7 +32,9 @@ const EXIT_TIMEOUT: u8 = 3;
     about = "Client for the Certifi cert manager"
 )]
 struct Cli {
-    /// Path to the config file. Defaults to platform user-config location.
+    /// Path to the config file. Defaults to the platform user-config location;
+    /// on Windows, falls back to %ProgramData%\Certifi\certifi.json when the
+    /// user has none (e.g. a scheduled task running as SYSTEM).
     #[arg(short, long, env = "CERTIFI_CONFIG", global = true)]
     config: Option<PathBuf>,
 
@@ -69,7 +71,7 @@ enum Cmd {
     /// Delete a certificate.
     Delete { target: String },
     /// Request a cert (idempotent) and optionally write its files to disk.
-    Request(RequestArgs),
+    Request(Box<RequestArgs>),
     /// Fetch documentation served by the connected Certifi server.
     ///
     /// `docs` with no slug prints the table of contents; `docs <slug>`
@@ -171,6 +173,17 @@ struct RequestArgs {
     #[arg(long)]
     privkey: Option<PathBuf>,
 
+    /// Write the cert, chain and private key as a PKCS#12 archive (.pfx) to
+    /// this path — what the Windows certificate store, IIS and Exchange
+    /// import. The leaf certificate is kept next to it as `<path>.crt` so
+    /// later runs only rewrite the archive when the cert actually changed.
+    #[arg(long, requires = "pfx_password_file")]
+    pfx: Option<PathBuf>,
+    /// Write the `--pfx` archive's password to this path. Stable across
+    /// renewals until the server's COOKIE_KEY rotates.
+    #[arg(long, requires = "pfx")]
+    pfx_password_file: Option<PathBuf>,
+
     /// Seconds to wait for the server to issue a new cert.
     #[arg(long, default_value_t = 300)]
     timeout: u64,
@@ -207,7 +220,33 @@ struct ConfigFile {
     token: String,
 }
 
+/// The config file to read when `--config` isn't given. On Windows a
+/// scheduled task usually runs as SYSTEM or a service account with no
+/// per-user config, so fall back to the machine-wide one there.
 fn default_config_path() -> Result<PathBuf> {
+    let user = user_config_path()?;
+    #[cfg(windows)]
+    {
+        let machine = machine_config_path();
+        if !user.exists() && machine.exists() {
+            return Ok(machine);
+        }
+    }
+    Ok(user)
+}
+
+/// `%ProgramData%\Certifi\certifi.json` — shared by every account on the
+/// machine, so its folder's ACL is what keeps the token private.
+#[cfg(windows)]
+fn machine_config_path() -> PathBuf {
+    std::env::var_os("ProgramData")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"))
+        .join("Certifi")
+        .join("certifi.json")
+}
+
+fn user_config_path() -> Result<PathBuf> {
     // Match the user-facing convention of ~/.config/certifi.json on Unix-likes
     // (including macOS), and %APPDATA%\certifi.json on Windows.
     #[cfg(windows)]
@@ -836,6 +875,10 @@ async fn run_request(client: &Client, args: &RequestArgs) -> Result<u8> {
             .with_context(|| format!("writing privkey to {}", p.display()))?;
     }
 
+    if let (Some(pfx), Some(pw_path)) = (&args.pfx, &args.pfx_password_file) {
+        changed |= write_pfx_if_changed(client, &cert.id, pfx, pw_path).await?;
+    }
+
     eprintln!(
         "Cert {} is valid (expires {}). Files {}.",
         cert.id,
@@ -863,6 +906,45 @@ async fn run_request(client: &Client, args: &RequestArgs) -> Result<u8> {
     }
 }
 
+/// Sidecar holding the leaf certificate the `--pfx` archive was built from.
+fn pfx_sidecar(pfx: &Path) -> PathBuf {
+    let mut name = pfx.as_os_str().to_owned();
+    name.push(".crt");
+    PathBuf::from(name)
+}
+
+/// A PKCS#12 archive is encrypted with a fresh salt every time the server
+/// builds one, so its bytes differ on every download even for the same cert.
+/// Decide on the leaf certificate instead, kept beside the archive, and only
+/// rewrite (and report a change) when that differs or a file is missing.
+async fn write_pfx_if_changed(
+    client: &Client,
+    id: &str,
+    pfx: &Path,
+    pw_path: &Path,
+) -> Result<bool> {
+    let leaf = client.download_cert(id).await?;
+    let sidecar = pfx_sidecar(pfx);
+    let current = std::fs::read(&sidecar).ok().as_deref() == Some(leaf.as_slice())
+        && pfx.exists()
+        && pw_path.exists();
+    if current {
+        return Ok(false);
+    }
+
+    let dl = client.download_pfx(id).await?;
+    let bytes = dl.pfx_bytes()?;
+    // Password first: a PFX on disk without its matching password is useless.
+    write_if_changed(pw_path, dl.password.as_bytes(), /* private = */ true)
+        .with_context(|| format!("writing PFX password to {}", pw_path.display()))?;
+    write_file_secure(pfx, &bytes, /* private = */ true)
+        .with_context(|| format!("writing PFX to {}", pfx.display()))?;
+    // Last, so an interrupted run is retried next time.
+    write_file_secure(&sidecar, &leaf, false)
+        .with_context(|| format!("writing {}", sidecar.display()))?;
+    Ok(true)
+}
+
 fn run_shell(cmd: &str) -> Result<std::process::ExitStatus> {
     // Use the platform's shell so users can write pipes / && etc. naturally.
     let status = if cfg!(windows) {
@@ -877,15 +959,21 @@ fn run_shell(cmd: &str) -> Result<std::process::ExitStatus> {
 // ── main ─────────────────────────────────────────────────────────────────────
 
 async fn dispatch(cli: Cli) -> Result<u8> {
+    if matches!(cli.cmd, Cmd::Init) {
+        // `init` writes the caller's own config unless told otherwise — never
+        // the machine-wide fallback `default_config_path` may pick.
+        let config_path = match &cli.config {
+            Some(p) => p.clone(),
+            None => user_config_path()?,
+        };
+        run_init(&config_path).await?;
+        return Ok(EXIT_OK_UNCHANGED);
+    }
+
     let config_path = match &cli.config {
         Some(p) => p.clone(),
         None => default_config_path()?,
     };
-
-    if matches!(cli.cmd, Cmd::Init) {
-        run_init(&config_path).await?;
-        return Ok(EXIT_OK_UNCHANGED);
-    }
 
     let (url, token) = resolve_creds(&cli, &config_path)?;
     let client = Client::new(&url, Auth::Token(token))?;

@@ -12,6 +12,8 @@ Pick a starting point based on what you're trying to do.
 - **[DNS providers](dns-providers.md)** — Per-provider setup for PowerDNS, Cloudflare, DigitalOcean, Hetzner DNS, Gandi LiveDNS. Multiple integrations can coexist; routing is first-match-wins by creation order.
 - **[Certificates](certificates.md)** — Issuing, renewing, downloading. How the idempotent `POST /api/certificates` behaves. The daily renewal scheduler. Pre-flight zone validation. The description field. Email notifications.
 - **[CLI](cli.md)** — `certifi-cli` for cron automation. Exit codes, `--reload-cmd`, `--poll-interval`, cross-platform install (including a Docker build path for hosts without Rust).
+- **[Windows](windows.md)** — The Windows builds (including Server 2012 R2), the `%ProgramData%\Certifi` layout and machine-wide config, and a scheduled task running as SYSTEM or a service account.
+- **[Exchange](exchange.md)** — Replace and auto-renew the certificate on Exchange 2010–2019/SE on Windows Server 2012 R2 and newer.
 
 ## Reference
 
@@ -28,6 +30,7 @@ Pick a starting point based on what you're trying to do.
 **Quick orientation:**
 
 - Want to issue a cert from a cron job on a remote host? Start with [CLI](cli.md).
+- Windows server or Exchange? [Windows](windows.md), then [Exchange](exchange.md).
 - Want to add a new DNS provider? Start with the "Adding a DNS provider" section of [Development](development.md).
 - Confused about the workspace layout? Start with [Architecture](architecture.md).
 - Don't want private keys sitting in the database file? [Secret backend](secret-backend.md).

@@ -5,6 +5,8 @@
 #   • Rust: rustfmt, clippy (-D warnings), and the workspace test suite.
 #   • Web:  the optional admin UI typechecks + builds.
 #   • Docker: the production server image still builds from a clean checkout.
+#   • Windows: the workspace builds and tests on Windows, and the .exe files
+#     are uploaded as workflow artifacts (Actions → run → Artifacts).
 #
 # Jobs run in parallel; the Rust toolchain + cargo registry are cached between
 # runs. Nothing is published — this is a validation pipeline.
@@ -30,6 +32,9 @@ permissions:
 env:
   # Keep in step with the toolchain pinned in the Dockerfile.
   RUST_TOOLCHAIN: "1.95.0"
+  # Pinned nightly for the tier-3 x86_64-win7-windows-msvc legacy CLI build.
+  # Keep in step with release.yml.
+  RUST_NIGHTLY_WIN7: "nightly-2026-10-01"
   CARGO_TERM_COLOR: always
 
 jobs:
@@ -61,6 +66,60 @@ jobs:
 
       - name: Test
         run: cargo test --workspace
+
+  # ---------------------------------------------------------------------------
+  # Windows: test the workspace natively and build the .exe files.
+  #
+  # The standard target (x86_64-pc-windows-msvc) needs Windows 10 / Server 2016
+  # or newer — Rust's std stopped supporting older Windows in 1.78. The legacy
+  # CLI is built for x86_64-win7-windows-msvc (Windows 7 / Server 2008 R2 and
+  # up, so 2012 R2 boxes still running Exchange). That target is tier 3: it
+  # needs a nightly toolchain and builds std from source.
+  # ---------------------------------------------------------------------------
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust ${{ env.RUST_TOOLCHAIN }}
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      # The server links OpenSSL; vendor it (built with the runner's Strawberry
+      # Perl) so the .exe doesn't need an OpenSSL install on the target box.
+      - name: Test
+        run: cargo test --workspace --features certifi-server/vendored-openssl
+
+      - name: Build release binaries
+        run: cargo build --release --locked -p certifi-server -p certifi-client --features certifi-server/vendored-openssl
+
+      - name: Install nightly for the legacy (win7) target
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_NIGHTLY_WIN7 }}
+          components: rust-src
+
+      - name: Build legacy CLI (Windows Server 2012 R2 and older)
+        run: cargo +${{ env.RUST_NIGHTLY_WIN7 }} build --release --locked -p certifi-client -Z build-std=std,panic_abort --target x86_64-win7-windows-msvc
+
+      - name: Stage
+        shell: bash
+        run: |
+          mkdir dist
+          cp target/release/certifi.exe     dist/certifi-windows-amd64.exe
+          cp target/release/certifi-cli.exe dist/certifi-cli-windows-amd64.exe
+          cp target/x86_64-win7-windows-msvc/release/certifi-cli.exe dist/certifi-cli-windows-amd64-legacy.exe
+          ls -la dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: certifi-windows-amd64
+          path: dist/*.exe
+          if-no-files-found: error
 
   # ---------------------------------------------------------------------------
   # The optional React + Vite admin UI must typecheck and build.

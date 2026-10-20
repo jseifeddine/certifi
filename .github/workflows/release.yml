@@ -1,7 +1,7 @@
 # =============================================================================
 # Release binaries — builds the server (`certifi`) and CLI (`certifi-cli`) for
-# linux/amd64 and linux/arm64 and attaches them to the GitHub release for the
-# tag.
+# linux, macOS and Windows and attaches them to the GitHub release for the
+# tag. Windows also gets a legacy CLI build for Server 2012 R2 and older.
 #
 # Triggers:
 #   • push of a vX.Y.Z tag  → build for that tag (creating the release if the
@@ -32,6 +32,9 @@ permissions:
 
 env:
   RUST_TOOLCHAIN: "1.95.0"
+  # Pinned nightly for the tier-3 x86_64-win7-windows-msvc legacy CLI build.
+  # Keep in step with ci.yml.
+  RUST_NIGHTLY_WIN7: "nightly-2026-10-01"
 
 jobs:
   # Make sure a release exists for the tag before the build jobs upload to it.
@@ -118,6 +121,63 @@ jobs:
           ls -la dist
 
       - name: Upload binaries to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ steps.ver.outputs.tag }}" dist/* \
+            --repo "$GITHUB_REPOSITORY" --clobber
+
+  # Windows: the standard .exe files (Windows 10 / Server 2016+) plus a legacy
+  # CLI for Windows 7 / Server 2008 R2 / 2012 R2 — Rust's std dropped those
+  # from the tier-1 target in 1.78, so that build uses the tier-3
+  # x86_64-win7-windows-msvc target on a pinned nightly.
+  build-windows:
+    needs: ensure-release
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Resolve tag
+        id: ver
+        shell: bash
+        run: echo "tag=${{ github.event.inputs.tag || github.ref_name }}" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust ${{ env.RUST_TOOLCHAIN }}
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Vendored OpenSSL (built with the runner's Strawberry Perl) so the
+      # server .exe needs no OpenSSL install on the target machine.
+      - name: Build release binaries
+        run: cargo build --release --locked -p certifi-server -p certifi-client --features certifi-server/vendored-openssl
+
+      - name: Install nightly for the legacy (win7) target
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_NIGHTLY_WIN7 }}
+          components: rust-src
+
+      - name: Build legacy CLI
+        run: cargo +${{ env.RUST_NIGHTLY_WIN7 }} build --release --locked -p certifi-client -Z build-std=std,panic_abort --target x86_64-win7-windows-msvc
+
+      - name: Stage + checksum artifacts
+        shell: bash
+        run: |
+          TAG="${{ steps.ver.outputs.tag }}"
+          mkdir -p dist
+          cp target/release/certifi.exe     "dist/certifi-${TAG}-windows-amd64.exe"
+          cp target/release/certifi-cli.exe "dist/certifi-cli-${TAG}-windows-amd64.exe"
+          cp target/x86_64-win7-windows-msvc/release/certifi-cli.exe "dist/certifi-cli-${TAG}-windows-amd64-legacy.exe"
+          ( cd dist && sha256sum certifi-* > "SHA256SUMS-${TAG}-windows-amd64.txt" )
+          ls -la dist
+
+      - name: Upload binaries to the release
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

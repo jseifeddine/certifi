@@ -48,6 +48,16 @@ const DOCS: &[(&str, &str, &str)] = &[
     ("api", "REST API", include_str!("../../../../docs/api.md")),
     ("cli", "CLI", include_str!("../../../../docs/cli.md")),
     (
+        "windows",
+        "Windows",
+        include_str!("../../../../docs/windows.md"),
+    ),
+    (
+        "exchange",
+        "Exchange",
+        include_str!("../../../../docs/exchange.md"),
+    ),
+    (
         "certificates",
         "Certificates",
         include_str!("../../../../docs/certificates.md"),

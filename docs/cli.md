@@ -33,7 +33,7 @@ Output lands in `dist/cli/<target>/certifi-cli`. Copy it to your deploy target's
 
 ### Binary releases
 
-Not yet published. The script + `cargo install` cover most workflows.
+Each [release](https://github.com/jseifeddine/certifi/releases/latest) attaches `certifi-cli` for Linux (amd64, arm64), macOS (arm64, amd64) and Windows (amd64), with SHA-256 sums. Windows also gets a `-legacy` build for Server 2012 R2 and older; see [Windows](windows.md#downloads).
 
 ## Configure
 
@@ -70,9 +70,11 @@ Env vars take precedence over the config file. Useful for CI / cron where you'd 
 | Platform | Default |
 |---|---|
 | Linux / macOS | `~/.config/certifi.json` |
-| Windows | `%APPDATA%\certifi.json` |
+| Windows | `%APPDATA%\certifi.json`, falling back to `%ProgramData%\Certifi\certifi.json` |
 
 Override with `--config /custom/path` or `CERTIFI_CONFIG=/custom/path`. The file is written with mode `0600` on Unix.
+
+On Windows, when the current user has no `%APPDATA%\certifi.json`, the CLI reads the machine-wide `%ProgramData%\Certifi\certifi.json`. That's how a scheduled task running as SYSTEM or a service account finds its config. `init` always writes the per-user file unless you pass `--config`. See [Windows](windows.md).
 
 ```json
 {
@@ -166,6 +168,7 @@ The flow:
 1. POSTs to `/api/certificates`. If a cert with the same `(CN, SAN set)` already exists, the server returns it with `deduplicated: true`. Otherwise it queues issuance and returns the new id.
 2. If the cert isn't already `active`, the CLI polls `GET /api/certificates/:id` every `--poll-interval` seconds (default `1`) until the status flips — or until `--timeout` (default `300`).
 3. For each `--fullchain` / `--cert` / `--chain` / `--privkey` path given, downloads the contents and writes atomically (`tempfile-in-same-dir` + `rename`) **only if** the bytes differ from what's already on disk. Skipping unchanged writes is what makes the cron pattern work.
+   - `--pfx <path> --pfx-password-file <path>` (always together) writes the cert, chain and key as a PKCS#12 archive plus its password, for the Windows certificate store, IIS and Exchange. A PFX's bytes differ on every download (fresh encryption salt), so the CLI keeps the leaf certificate beside it as `<path>.crt` and rewrites the archive only when that certificate changed. The password stays the same across renewals until the server's `COOKIE_KEY` rotates.
 4. If anything was written and `--reload-cmd` is set, runs the command via `sh -c` (or `cmd /C` on Windows).
 
 ## Exit codes
@@ -221,12 +224,12 @@ Run one `certifi-cli request` per cert. Each call is independent — the server 
 
 ```powershell
 certifi-cli.exe request -d app.example.com `
-  --fullchain "C:\IIS\certs\app.fullchain.pem" `
-  --privkey   "C:\IIS\certs\app.privkey.pem" `
+  --fullchain "C:\ProgramData\Certifi\app\fullchain.pem" `
+  --privkey   "C:\ProgramData\Certifi\app\privkey.pem" `
   --reload-cmd "iisreset /noforce"
 ```
 
-The CLI writes the privkey with restrictive permissions on Unix (`0600`); on Windows it relies on parent-directory ACLs. Place it under `C:\ProgramData\...` or another path with appropriate ACLs.
+The CLI writes the privkey with restrictive permissions on Unix (`0600`); on Windows it relies on parent-directory ACLs. Place it under `C:\ProgramData\Certifi`, locked down as described in [Windows](windows.md). That page also walks through registering the task, choosing the account it runs as (SYSTEM, a service account or a gMSA), and testing it. For Exchange, see [Exchange](exchange.md).
 
 ## URL handling
 

@@ -51,6 +51,8 @@ Full docs live in [`docs/`](docs/README.md):
 | **[DNS providers](docs/dns-providers.md)** | Configuring each integration; adding new ones |
 | **[Certificates](docs/certificates.md)** | Issuing, renewing, downloading, the idempotent model |
 | **[CLI](docs/cli.md)** | `certifi-cli` for cron-driven automation |
+| **[Windows](docs/windows.md)** | Windows builds, scheduled task, run-as account |
+| **[Exchange](docs/exchange.md)** | Replace and auto-renew Exchange 2010+ certificates |
 | **[API reference](docs/api.md)** | REST endpoints and the SSE event stream |
 | **[Secret backend](docs/secret-backend.md)** | Optional OpenBao storage for keys and credentials |
 | **[Security](docs/security.md)** | Credential storage, production checklist |
