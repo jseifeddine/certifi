@@ -6,6 +6,20 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.4.2] — 2026-10-20
+
+### Fixed
+
+- **RSA certificates with more than one name failed to issue.** The RSA CSR carried only the
+  common name, so Let's Encrypt rejected the finalize step with "CSR does not specify same
+  identifiers as Order". Single-name RSA certificates and all EC certificates were unaffected. The
+  RSA CSR now lists every name in a subjectAltName extension, like the EC one. A certificate that
+  failed this way is retried in place on the next request or renewal.
+- Docs: the Exchange guide no longer tells Exchange 2010 users to put `-Version 2.0` in the
+  scheduled task without first checking the 2.0 engine can start. Without the engine the task
+  exits at once with `0xFFFF0000`. The guide now checks it first and covers both errors under
+  troubleshooting.
+
 ## [1.4.1] — 2026-10-20
 
 ### Fixed
@@ -248,7 +262,8 @@ First production release.
   crypto helpers); `rustfmt` + `clippy -D warnings` enforced in CI; and a sidebar footer showing
   the running version linked to its GitHub release alongside a version-pinned Docs link.
 
-[Unreleased]: https://github.com/jseifeddine/certifi/compare/v1.4.1...HEAD
+[Unreleased]: https://github.com/jseifeddine/certifi/compare/v1.4.2...HEAD
+[1.4.2]: https://github.com/jseifeddine/certifi/compare/v1.4.1...v1.4.2
 [1.4.1]: https://github.com/jseifeddine/certifi/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/jseifeddine/certifi/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/jseifeddine/certifi/compare/v1.2.0...v1.3.0
