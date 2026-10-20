@@ -57,10 +57,32 @@ pub struct Config {
     pub env_oidc_force_login: Option<String>,
 }
 
+/// Where state lives when `DATA_DIR` is unset. `./data` on Unix, matching
+/// the container layout. On Windows the working directory of a scheduled task
+/// or service is `C:\Windows\System32`, so use the machine-wide
+/// `%ProgramData%\Certifi\data` instead.
+fn default_data_dir() -> PathBuf {
+    if cfg!(windows) {
+        program_data_dir().join("data")
+    } else {
+        PathBuf::from("./data")
+    }
+}
+
+/// `%ProgramData%\Certifi` — the machine-wide home for the Windows build:
+/// its `certifi.env` and, by default, its database.
+pub fn program_data_dir() -> PathBuf {
+    std::env::var_os("ProgramData")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"))
+        .join("Certifi")
+}
+
 impl Config {
     pub fn from_env() -> anyhow::Result<Self> {
-        let data_dir =
-            PathBuf::from(std::env::var("DATA_DIR").unwrap_or_else(|_| "./data".to_string()));
+        let data_dir = std::env::var("DATA_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| default_data_dir());
 
         let listen_addr =
             std::env::var("LISTEN_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".to_string());
@@ -261,7 +283,7 @@ mod tests {
     /// the tests don't depend on (or mutate) the process environment.
     fn base() -> Config {
         Config {
-            data_dir: PathBuf::from("/var/lib/certifi"),
+            data_dir: PathBuf::from("certifi-data"),
             listen_addr: "0.0.0.0:8080".to_string(),
             cookie_key: vec![0u8; 64],
             smtp_host: None,
@@ -291,7 +313,8 @@ mod tests {
     #[test]
     fn db_path_is_under_the_data_dir() {
         let c = base();
-        assert_eq!(c.db_path(), "/var/lib/certifi/certifi.db");
+        let expected = PathBuf::from("certifi-data").join("certifi.db");
+        assert_eq!(c.db_path(), expected.to_string_lossy());
     }
 
     #[test]

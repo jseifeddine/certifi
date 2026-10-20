@@ -39,6 +39,12 @@ pub struct AppState {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let _ = dotenvy::dotenv();
+    // A scheduled task or service on Windows starts in System32, so a `.env`
+    // next to the working directory is no use there. Read the machine-wide
+    // one too; variables already set (including from `./.env`) win.
+    if cfg!(windows) {
+        let _ = dotenvy::from_path(config::program_data_dir().join("certifi.env"));
+    }
 
     tracing_subscriber::fmt()
         .with_env_filter(

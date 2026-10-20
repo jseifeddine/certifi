@@ -6,6 +6,39 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.4.0] — 2026-10-20
+
+### Fixed
+
+- **DNS propagation check no longer waits out the full timeout for unreachable IPv6 nameserver
+  addresses** ([#3](https://github.com/jseifeddine/certifi/issues/3)). On a host with no IPv6
+  route (an IPv4-only Docker network, say), every AAAA of every authoritative nameserver counted as
+  "record missing", so issuance sat at the 300s timeout before validating. Now:
+  - an address this host has no route to is dropped after the first try and logged once;
+  - a nameserver is ready when at least one of its addresses answers and every address that
+    answers serves all values, so a timeout on one address doesn't hold up the others;
+  - when no nameserver for a name is reachable at all, the check gives up straight away and falls
+    back to the provider's fixed propagation delay.
+  - Each pass queries all addresses in parallel.
+
+### Added
+
+- **Windows builds.** Releases attach `certifi-cli` and `certifi` for Windows amd64, plus a
+  `-legacy` CLI for Windows 7 / Server 2008 R2 / 2012 R2 (`x86_64-win7-windows-msvc`). Rust's
+  standard Windows target no longer runs there. CI builds and tests on Windows and uploads the
+  `.exe` files as artifacts.
+- **`certifi-cli request --pfx <path> --pfx-password-file <path>`** writes a PKCS#12 archive and
+  its password, rewritten only when the certificate changes.
+- On Windows the CLI falls back to `%ProgramData%\Certifi\certifi.json` when the user has no
+  `%APPDATA%\certifi.json`, so scheduled tasks running as SYSTEM or a service account find it.
+- On Windows the server defaults `DATA_DIR` to `%ProgramData%\Certifi\data` and also reads
+  `%ProgramData%\Certifi\certifi.env`.
+- `certifi-client`: `download_pfx(id)`.
+- Docs: [Windows](docs/windows.md) (install, layout, scheduled task and its account) and
+  [Exchange](docs/exchange.md), with
+  [`scripts/windows/Update-ExchangeCertificate.ps1`](scripts/windows/Update-ExchangeCertificate.ps1)
+  for Exchange 2010 SP3 through 2019 / SE.
+
 ## [1.3.0] — 2026-10-05
 
 ### Added
@@ -205,7 +238,8 @@ First production release.
   crypto helpers); `rustfmt` + `clippy -D warnings` enforced in CI; and a sidebar footer showing
   the running version linked to its GitHub release alongside a version-pinned Docs link.
 
-[Unreleased]: https://github.com/jseifeddine/certifi/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/jseifeddine/certifi/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/jseifeddine/certifi/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/jseifeddine/certifi/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/jseifeddine/certifi/compare/v1.1.4...v1.2.0
 [1.1.4]: https://github.com/jseifeddine/certifi/compare/v1.1.3...v1.1.4

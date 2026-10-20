@@ -54,6 +54,25 @@ pub struct IntegrationListing {
     pub available_kinds: Vec<IntegrationKind>,
 }
 
+/// `POST /api/certificates/:id/download/pfx` response. The password is stable
+/// across calls until the server's `COOKIE_KEY` rotates.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PfxDownload {
+    pub pfx_b64: String,
+    pub password: String,
+    pub filename: String,
+}
+
+impl PfxDownload {
+    /// The PKCS#12 archive itself.
+    pub fn pfx_bytes(&self) -> Result<Vec<u8>> {
+        use base64::Engine;
+        base64::engine::general_purpose::STANDARD
+            .decode(self.pfx_b64.trim())
+            .map_err(|e| Error::Decode(format!("pfx_b64: {e}")))
+    }
+}
+
 /// One entry from `GET /api/docs`. Mirrors the server's `DocSummary` but
 /// owns its strings — we can't pull in `utoipa`/`ToSchema` deps from a
 /// client. The shape is the doc's URL slug and a display title.
@@ -310,6 +329,17 @@ impl Client {
         self.bytes_request(
             reqwest::Method::GET,
             &format!("certificates/{}/download/chain.pem", id),
+        )
+        .await
+    }
+
+    /// The cert, its chain and private key as a password-protected PKCS#12
+    /// archive — what Windows' certificate store and Exchange import.
+    pub async fn download_pfx(&self, id: &str) -> Result<PfxDownload> {
+        self.json_request(
+            reqwest::Method::POST,
+            &format!("certificates/{}/download/pfx", id),
+            None::<&serde_json::Value>,
         )
         .await
     }

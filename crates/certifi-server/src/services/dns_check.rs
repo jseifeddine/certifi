@@ -63,10 +63,18 @@ pub struct ExpectedTxt {
 /// Wait until every authoritative nameserver for each challenge name serves
 /// all of the expected TXT values.
 ///
+/// A nameserver usually has several addresses (an A and an AAAA, sometimes
+/// more). It counts as ready when at least one of its addresses answers and
+/// every address that answers serves all the values. Addresses this host has
+/// no route to at all — an AAAA from an IPv4-only container — are dropped
+/// after the first try instead of being counted as "record missing", and a
+/// timeout on one address doesn't hold up a server whose other addresses
+/// answered.
+///
 /// Returns `Ok(true)` once everything agrees, `Ok(false)` if `timeout` ran out
-/// first (caller decides whether to push on), and `Err` only when the zone's
-/// nameservers can't be discovered at all — the caller then falls back to the
-/// provider's fixed propagation delay.
+/// first (caller decides whether to push on), and `Err` when the zone's
+/// nameservers can't be discovered or none of them is reachable from here —
+/// the caller then falls back to the provider's fixed propagation delay.
 pub async fn wait_for_propagation(expected: &[ExpectedTxt], timeout: Duration) -> Result<bool> {
     if expected.is_empty() {
         return Ok(true);
@@ -74,7 +82,7 @@ pub async fn wait_for_propagation(expected: &[ExpectedTxt], timeout: Duration) -
 
     // Resolve the authoritative server IPs once — they don't change mid-issuance,
     // and re-resolving them every second would just add noise and latency.
-    let mut targets: Vec<(&ExpectedTxt, Vec<(String, IpAddr)>)> = Vec::new();
+    let mut targets: Vec<(&ExpectedTxt, Vec<NsTarget>)> = Vec::new();
     for exp in expected {
         let servers = authoritative_servers(&exp.fqdn)
             .await
@@ -91,31 +99,95 @@ pub async fn wait_for_propagation(expected: &[ExpectedTxt], timeout: Duration) -
                 .collect::<Vec<_>>()
                 .join(", ")
         );
-        targets.push((exp, servers));
+        targets.push((exp, group_by_ns(servers)));
     }
 
     let deadline = Instant::now() + timeout;
     let mut last_report = String::new();
 
     loop {
+        // Query every live address of every server in parallel, so one
+        // address that only ever times out costs a single QUERY_TIMEOUT per
+        // pass rather than one per address.
+        let mut probes = tokio::task::JoinSet::new();
+        for (ti, (exp, servers)) in targets.iter().enumerate() {
+            for (si, ns) in servers.iter().enumerate() {
+                for (ai, ip) in ns.addrs.iter().enumerate() {
+                    let (ip, fqdn) = (*ip, exp.fqdn.clone());
+                    probes.spawn(async move { ((ti, si, ai), query_txt(ip, &fqdn).await) });
+                }
+            }
+        }
+        let mut results: Vec<((usize, usize, usize), Probe)> = Vec::new();
+        while let Some(joined) = probes.join_next().await {
+            results.push(joined.context("DNS check task")?);
+        }
+
         let mut all_ready = true;
         let mut report: Vec<String> = Vec::new();
 
-        for (exp, servers) in &targets {
-            for (ns_name, ip) in servers {
-                let seen = query_txt(*ip, &exp.fqdn).await;
-                let missing: Vec<&String> =
-                    exp.values.iter().filter(|v| !seen.contains(*v)).collect();
-                if !missing.is_empty() {
-                    all_ready = false;
-                    report.push(format!(
-                        "{} @ {}: {} of {} value(s) missing",
-                        exp.fqdn,
-                        ns_name,
-                        missing.len(),
-                        exp.values.len()
-                    ));
+        for (ti, (exp, servers)) in targets.iter_mut().enumerate() {
+            for (si, ns) in servers.iter_mut().enumerate() {
+                let mine: Vec<(usize, &Probe)> = results
+                    .iter()
+                    .filter(|((t, s, _), _)| (*t, *s) == (ti, si))
+                    .map(|((_, _, a), p)| (*a, p))
+                    .collect();
+
+                // Forget addresses we can't route to: they'll never answer,
+                // and Let's Encrypt reaches the server over another one.
+                let unroutable: Vec<IpAddr> = mine
+                    .iter()
+                    .filter(|(_, p)| **p == Probe::NoRoute)
+                    .map(|(a, _)| ns.addrs[*a])
+                    .collect();
+                for ip in &unroutable {
+                    tracing::info!(
+                        "DNS check: no route to {} ({}) from this host — not waiting on that address",
+                        ns.name,
+                        ip
+                    );
                 }
+                ns.addrs.retain(|ip| !unroutable.contains(ip));
+
+                let probes: Vec<Probe> = mine.into_iter().map(|(_, p)| p.clone()).collect();
+                match assess(&exp.values, &probes) {
+                    NsState::Ready => {}
+                    NsState::Unreachable => {
+                        if !ns.skipped {
+                            tracing::warn!(
+                                "DNS check: no address of {} is reachable from this host — \
+                                 can't verify {} there",
+                                ns.name,
+                                exp.fqdn
+                            );
+                            ns.skipped = true;
+                        }
+                    }
+                    NsState::NoAnswer => {
+                        all_ready = false;
+                        report.push(format!("{} @ {}: no answer", exp.fqdn, ns.name));
+                    }
+                    NsState::Missing(n) => {
+                        all_ready = false;
+                        report.push(format!(
+                            "{} @ {}: {} of {} value(s) missing",
+                            exp.fqdn,
+                            ns.name,
+                            n,
+                            exp.values.len()
+                        ));
+                    }
+                }
+            }
+
+            // Every nameserver for this name is unreachable: there is nothing
+            // to wait for, so say so now instead of burning the whole timeout.
+            if servers.iter().all(|ns| ns.addrs.is_empty()) {
+                anyhow::bail!(
+                    "no authoritative nameserver for {} is reachable from this host",
+                    exp.fqdn
+                );
             }
         }
 
@@ -140,6 +212,63 @@ pub async fn wait_for_propagation(expected: &[ExpectedTxt], timeout: Duration) -
         }
         sleep(POLL_INTERVAL).await;
     }
+}
+
+/// Where one nameserver stands after a pass.
+#[derive(Debug, PartialEq, Eq)]
+enum NsState {
+    /// At least one address answered, and every one that did serves all values.
+    Ready,
+    /// The worst answering address is still missing this many values.
+    Missing(usize),
+    /// Reachable, but nothing answered this pass (timeouts, SERVFAIL…).
+    NoAnswer,
+    /// None of its addresses can be reached from this host.
+    Unreachable,
+}
+
+/// Judge one nameserver from this pass's probes of its addresses.
+fn assess(expected: &BTreeSet<String>, probes: &[Probe]) -> NsState {
+    if probes.iter().all(|p| *p == Probe::NoRoute) {
+        return NsState::Unreachable;
+    }
+    let missing = probes
+        .iter()
+        .filter_map(|p| match p {
+            Probe::Answered(seen) => Some(expected.iter().filter(|v| !seen.contains(*v)).count()),
+            _ => None,
+        })
+        .max();
+    match missing {
+        None => NsState::NoAnswer,
+        Some(0) => NsState::Ready,
+        Some(n) => NsState::Missing(n),
+    }
+}
+
+/// One authoritative nameserver and the addresses still worth polling.
+struct NsTarget {
+    name: String,
+    addrs: Vec<IpAddr>,
+    /// Already warned that none of its addresses is reachable.
+    skipped: bool,
+}
+
+/// Fold `(ns_name, ip)` pairs into one entry per nameserver, keeping the
+/// order the delegation listed them in.
+fn group_by_ns(servers: Vec<(String, IpAddr)>) -> Vec<NsTarget> {
+    let mut out: Vec<NsTarget> = Vec::new();
+    for (name, ip) in servers {
+        match out.iter_mut().find(|ns| ns.name == name) {
+            Some(ns) => ns.addrs.push(ip),
+            None => out.push(NsTarget {
+                name,
+                addrs: vec![ip],
+                skipped: false,
+            }),
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -439,10 +568,25 @@ async fn query_one(server: IpAddr, name: &Name, rtype: RecordType) -> Result<Mes
     };
     let target = SocketAddr::new(server, 53);
 
+    // Binding a socket of the family, or the route lookup `connect` does on a
+    // UDP socket, fails straight away when this host can't reach the address
+    // at all — report that as `NoRoute`, not as a server that didn't answer.
+    let no_route = |e: std::io::Error| -> anyhow::Error {
+        if is_no_route(&e) {
+            anyhow::Error::new(NoRoute(server))
+        } else {
+            anyhow::Error::new(e)
+        }
+    };
     let udp = async {
-        let sock = UdpSocket::bind(bind).await.context("bind UDP")?;
-        sock.connect(target).await.context("connect UDP")?;
-        sock.send(&wire).await.context("send UDP query")?;
+        // A failed bind means no socket of this family can be opened here at
+        // all (IPv6 disabled in the kernel reports EAFNOSUPPORT, which std
+        // doesn't classify), so it's always `NoRoute`.
+        let sock = UdpSocket::bind(bind)
+            .await
+            .map_err(|_| anyhow::Error::new(NoRoute(server)))?;
+        sock.connect(target).await.map_err(no_route)?;
+        sock.send(&wire).await.map_err(no_route)?;
         let mut buf = vec![0u8; EDNS_UDP_PAYLOAD as usize + 64];
         let n = sock.recv(&mut buf).await.context("recv UDP answer")?;
         Message::from_vec(&buf[..n]).context("decode UDP answer")
@@ -490,17 +634,59 @@ async fn query_tcp(target: SocketAddr, wire: &[u8]) -> Result<Message> {
     Message::from_vec(&body).context("decode TCP answer")
 }
 
-/// Query one nameserver directly for the TXT values at `fqdn`. Errors and empty
-/// answers both come back as an empty set — the caller just retries until the
-/// deadline.
-async fn query_txt(ip: IpAddr, fqdn: &str) -> BTreeSet<String> {
-    let mut out = BTreeSet::new();
+/// What one poll of one nameserver address told us.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Probe {
+    /// The server answered (NOERROR/NXDOMAIN) with these TXT values — empty
+    /// when the record isn't there yet.
+    Answered(BTreeSet<String>),
+    /// This host has no route to the address (`ENETUNREACH` and friends),
+    /// typically an AAAA queried from an IPv4-only container. It won't start
+    /// answering on the next pass.
+    NoRoute,
+    /// Timed out, refused, SERVFAIL, garbled… Worth asking again.
+    Failed,
+}
+
+/// The local network can't reach this address at all. Raised by
+/// `query_one` so callers can tell "no route" apart from a server that is
+/// slow or doesn't have the record yet.
+#[derive(Debug)]
+struct NoRoute(IpAddr);
+
+impl std::fmt::Display for NoRoute {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "no route to {}", self.0)
+    }
+}
+
+impl std::error::Error for NoRoute {}
+
+/// Socket errors meaning the address family or destination isn't routable
+/// from here, as opposed to a server that's down or slow.
+fn is_no_route(e: &std::io::Error) -> bool {
+    use std::io::ErrorKind;
+    matches!(
+        e.kind(),
+        ErrorKind::NetworkUnreachable
+            | ErrorKind::HostUnreachable
+            | ErrorKind::NetworkDown
+            | ErrorKind::AddrNotAvailable
+            | ErrorKind::Unsupported
+    )
+}
+
+/// Query one nameserver directly for the TXT values at `fqdn`.
+async fn query_txt(ip: IpAddr, fqdn: &str) -> Probe {
     let Ok(name) = to_name(fqdn) else {
-        return out;
+        return Probe::Failed;
     };
-    let Ok(resp) = query_one(ip, &name, RecordType::TXT).await else {
-        return out;
+    let resp = match query_one(ip, &name, RecordType::TXT).await {
+        Ok(resp) => resp,
+        Err(e) if e.downcast_ref::<NoRoute>().is_some() => return Probe::NoRoute,
+        Err(_) => return Probe::Failed,
     };
+    let mut out = BTreeSet::new();
     for rec in resp.answers() {
         if let Some(RData::TXT(txt)) = rec.data() {
             // A TXT record is a list of character-strings; a >255-byte value
@@ -513,7 +699,7 @@ async fn query_txt(ip: IpAddr, fqdn: &str) -> BTreeSet<String> {
             out.insert(joined);
         }
     }
-    out
+    Probe::Answered(out)
 }
 
 /// Parse an FQDN into an absolute `Name`.
@@ -677,5 +863,78 @@ mod tests {
             values,
         };
         assert_eq!(e.values.len(), 1);
+    }
+
+    fn set(vals: &[&str]) -> BTreeSet<String> {
+        vals.iter().map(|v| v.to_string()).collect()
+    }
+
+    #[test]
+    fn unroutable_address_does_not_hold_up_a_server_that_answered() {
+        // The issue #3 case: the A answers with the record, the AAAA has no
+        // route from an IPv4-only container.
+        let want = set(&["tok"]);
+        let probes = [Probe::Answered(set(&["tok"])), Probe::NoRoute];
+        assert_eq!(assess(&want, &probes), NsState::Ready);
+    }
+
+    #[test]
+    fn a_timeout_on_one_address_does_not_hold_up_the_others() {
+        let want = set(&["tok"]);
+        let probes = [Probe::Failed, Probe::Answered(set(&["tok"]))];
+        assert_eq!(assess(&want, &probes), NsState::Ready);
+    }
+
+    #[test]
+    fn every_answering_address_must_serve_every_value() {
+        let want = set(&["a", "b"]);
+        let probes = [
+            Probe::Answered(set(&["a", "b"])),
+            Probe::Answered(set(&["a"])),
+        ];
+        assert_eq!(assess(&want, &probes), NsState::Missing(1));
+        // A reachable server with an empty answer is genuinely missing it.
+        assert_eq!(
+            assess(&want, &[Probe::Answered(BTreeSet::new())]),
+            NsState::Missing(2)
+        );
+    }
+
+    #[test]
+    fn no_answer_and_no_route_are_told_apart() {
+        let want = set(&["tok"]);
+        assert_eq!(
+            assess(&want, &[Probe::Failed, Probe::NoRoute]),
+            NsState::NoAnswer
+        );
+        assert_eq!(
+            assess(&want, &[Probe::NoRoute, Probe::NoRoute]),
+            NsState::Unreachable
+        );
+    }
+
+    #[test]
+    fn group_by_ns_keeps_order_and_merges_families() {
+        let v4: IpAddr = "192.0.2.10".parse().unwrap();
+        let v6: IpAddr = "2001:db8::10".parse().unwrap();
+        let other: IpAddr = "192.0.2.20".parse().unwrap();
+        let grouped = group_by_ns(vec![
+            ("ns1.example.com".into(), v4),
+            ("ns2.example.com".into(), other),
+            ("ns1.example.com".into(), v6),
+        ]);
+        assert_eq!(grouped.len(), 2);
+        assert_eq!(grouped[0].name, "ns1.example.com");
+        assert_eq!(grouped[0].addrs, vec![v4, v6]);
+        assert_eq!(grouped[1].addrs, vec![other]);
+    }
+
+    #[test]
+    fn no_route_errors_are_recognised() {
+        use std::io::{Error, ErrorKind};
+        assert!(is_no_route(&Error::from(ErrorKind::NetworkUnreachable)));
+        assert!(is_no_route(&Error::from(ErrorKind::HostUnreachable)));
+        assert!(!is_no_route(&Error::from(ErrorKind::TimedOut)));
+        assert!(!is_no_route(&Error::from(ErrorKind::ConnectionRefused)));
     }
 }
