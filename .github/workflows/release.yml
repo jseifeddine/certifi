@@ -163,6 +163,11 @@ jobs:
           components: rust-src
 
       - name: Build legacy CLI
+        # windows-targets 0.48 (still in the tree) ships import libraries only
+        # for the exact x86_64-pc-windows-msvc triple; raw-dylib links the
+        # Windows APIs without them.
+        env:
+          RUSTFLAGS: --cfg windows_raw_dylib
         run: cargo +${{ env.RUST_NIGHTLY_WIN7 }} build --release --locked -p certifi-client -Z build-std=std,panic_abort --target x86_64-win7-windows-msvc
 
       - name: Stage + checksum artifacts
